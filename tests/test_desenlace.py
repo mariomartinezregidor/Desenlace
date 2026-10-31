@@ -9,16 +9,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from resolve_links import (  # noqa: E402
+from desenlace import (  # noqa: E402
     ResolutionCache,
     ResolveError,
     base_destination,
     cache_key,
     collect_urls,
     detect_action,
+    extract_search_redirect_target,
     extract_wrapper_target,
     filename_from_disposition,
     filename_from_url,
+    looks_like_shortener,
     parse_counter,
     read_urls_file,
     sanitize_filename,
@@ -28,6 +30,63 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 class ParserTests(unittest.TestCase):
+    def test_extract_search_redirect_target(self):
+        url = (
+            "https://www.google.com/url?sa=t&url="
+            "https%3A%2F%2Fexample.com%2Fdestino&usg=AOvVaw1"
+        )
+        self.assertEqual(
+            extract_search_redirect_target(url), "https://example.com/destino"
+        )
+        self.assertEqual(
+            extract_search_redirect_target("https://www.google.com/url?q=https://a.test/x"),
+            "https://a.test/x",
+        )
+        self.assertIsNone(
+            extract_search_redirect_target("https://example.com/?url=https://a.test/x")
+        )
+        self.assertIsNone(
+            extract_search_redirect_target("https://www.google.com/search?q=hola")
+        )
+
+    def test_google_redirector_action(self):
+        url = (
+            "https://www.google.com/url?sa=t&url="
+            "https%3A%2F%2Fexample.com%2Fdestino"
+        )
+        action = detect_action("<html><body></body></html>", url)
+        self.assertIsNotNone(action)
+        self.assertEqual(action.kind, "goto")
+        self.assertEqual(action.url, "https://example.com/destino")
+
+    def test_shortener_detection_ignores_article_scripts(self):
+        article = (
+            "<html><body><article>Texto</article>"
+            "<script>msgtext.textContent = `Please wait ${counter} sec.`;</script>"
+            '<a href="/otro-articulo/" rel="next">Siguiente</a>'
+            "</body></html>"
+        )
+        self.assertFalse(
+            looks_like_shortener(article, "https://blog.example/articulo/")
+        )
+        self.assertIsNone(detect_action(article, "https://blog.example/articulo/"))
+
+        shortener = '<html><body><form id="go-link"></form></body></html>'
+        self.assertTrue(
+            looks_like_shortener(shortener, "https://short.example/abc")
+        )
+
+    def test_shortener_data_href_button(self):
+        html = (
+            '<html><body><form id="go-link"></form>'
+            '<button data-href="https://example.com/final">Continuar</button>'
+            "</body></html>"
+        )
+        action = detect_action(html, "https://short.example/x")
+        self.assertIsNotNone(action)
+        self.assertEqual(action.kind, "goto")
+        self.assertEqual(action.url, "https://example.com/final")
+
     def test_extract_wrapper_target(self):
         url = (
             "https://web-api-13.vercel.app/?url="

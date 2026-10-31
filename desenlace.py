@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Resuelve cadenas de redirección con esperas y publicidad, y descarga el archivo final.
+"""Desenlace: resuelve cadenas de redirección con esperas y publicidad, y descarga el archivo final.
 
 Ejemplos:
-    python3 resolve_links.py "https://web-api-13.vercel.app/?url=https://softurl.in/XXXX"
-    python3 resolve_links.py "https://softurl.in/XXXX" --info
-    python3 resolve_links.py "https://softurl.in/XXXX" -o mis_descargas
+    python3 desenlace.py "https://web-api-13.vercel.app/?url=https://softurl.in/XXXX"
+    python3 desenlace.py "https://softurl.in/XXXX" --info
+    python3 desenlace.py "https://softurl.in/XXXX" -o mis_descargas
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 from urllib.parse import (
     parse_qs,
     parse_qsl,
@@ -35,7 +35,7 @@ from urllib.parse import (
 )
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 DEFAULT_UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -47,11 +47,15 @@ DEFAULT_MAX_HOPS = 25
 DEFAULT_WAIT_BUFFER = 0.4
 DEFAULT_CACHE_TTL = 7 * 24 * 3600
 BASE_DIR = Path(__file__).resolve().parent
-CACHE_FILE = BASE_DIR / ".resolve_cache.json"
+CACHE_FILE = BASE_DIR / ".desenlace_cache.json"
 DOWNLOAD_DIR = Path("downloads")
 
 _DEST_LOCK = threading.Lock()
 _RESERVED_PATHS: set[Path] = set()
+
+WRAPPER_HOSTS = ("web-api-13.vercel.app", "web-api.vercel.app")
+# Redirectores de búsqueda que envuelven el destino en un parámetro.
+SEARCH_REDIRECT_HOSTS = ("google.com", "googleusercontent.com")
 
 
 class ResolveError(RuntimeError):
@@ -65,6 +69,7 @@ class Action:
     fields: dict[str, str] = field(default_factory=dict)
     delay: float = 0.0
     filename: str = ""
+    action_url: str = ""
 
 
 @dataclass
@@ -95,8 +100,10 @@ def extract_wrapper_target(url: str) -> str | None:
         return None
     if not parts.query:
         return None
-    if "vercel.app" not in parts.netloc and "web-api" not in parts.netloc:
-        return None
+    host = parts.netloc.lower()
+    if not any(host.startswith(h.split(".")[0]) and "vercel.app" in host for h in WRAPPER_HOSTS):
+        if "web-api" not in host and "vercel.app" not in host:
+            return None
     values = parse_qs(parts.query).get("url")
     if not values:
         return None
@@ -104,6 +111,34 @@ def extract_wrapper_target(url: str) -> str | None:
     if not target.startswith(("http://", "https://")):
         return None
     return target
+
+
+def extract_search_redirect_target(url: str) -> str | None:
+    """Extrae el destino real de un redirector de búsqueda (`/url?url=` o `/url?q=`).
+
+    Algunos acortadores (por ejemplo zflexlink) terminan su cadena de pasos
+    enviando a `https://www.google.com/url?...&url=DESTINO`. Siguiendo ese
+    salto directamente se evita cargar la página intermedia de Google y sus
+    posibles avisos de consentimiento.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    host = parts.netloc.lower()
+    if not any(host == h or host.endswith("." + h) for h in SEARCH_REDIRECT_HOSTS):
+        return None
+    if parts.path.rstrip("/") != "/url":
+        return None
+    query = parse_qs(parts.query)
+    for name in ("url", "q"):
+        values = query.get(name)
+        if not values:
+            continue
+        target = values[0].strip()
+        if target.startswith(("http://", "https://")) and target != url:
+            return target
+    return None
 
 
 def origin_of(url: str) -> str:
@@ -228,7 +263,7 @@ class ResolutionCache:
             return dict(entry)
 
     def put(self, key: str, page_url: str, filename: str) -> None:
-        if not self.enabled or not page_url:
+        if self.enabled is False or not page_url:
             return
         with self._lock:
             self._data[key] = {
@@ -319,6 +354,13 @@ def parse_counter(html: str) -> float:
             return max(0.0, float(match.group(1)))
         except ValueError:
             pass
+    # Buscar en objetos JSON app_vars
+    match = re.search(r'app_vars\s*=\s*\{[^}]*"counter_value"\s*:\s*"([^"]+)"', html, re.I)
+    if match:
+        try:
+            return max(0.0, float(match.group(1)))
+        except ValueError:
+            pass
     return 1.0
 
 
@@ -338,6 +380,8 @@ def decode_safelink(value: str) -> dict:
 
 def form_fields(form) -> dict[str, str]:
     fields: dict[str, str] = {}
+    if form is None:
+        return fields
     for element in form.find_all(["input", "textarea", "select"]):
         name = element.get("name")
         if not name:
@@ -358,94 +402,6 @@ def form_fields(form) -> dict[str, str]:
     return fields
 
 
-def detect_action(html: str, base_url: str) -> Action | None:
-    soup = BeautifulSoup(html, "html.parser")
-
-    download_button = soup.find("a", id="downloadButton")
-    if download_button is not None and download_button.get("href"):
-        href = urljoin(base_url, download_button["href"].strip())
-        return Action("mediafire", url=href, filename=filename_from_url(href) or "")
-
-    go_form = soup.find("form", id="go-link")
-    if go_form is None:
-        ad_input = soup.find("input", {"name": "ad_form_data"})
-        if ad_input is not None:
-            go_form = ad_input.find_parent("form")
-    if go_form is not None:
-        fields = form_fields(go_form)
-        if "ad_form_data" in fields:
-            action_url = urljoin(base_url, go_form.get("action") or base_url)
-            return Action("xhr_post", url=action_url, fields=fields, delay=parse_counter(html))
-
-    safelink_input = soup.find("input", {"name": "newwpsafelink"})
-    if safelink_input is not None and safelink_input.get("value"):
-        payload = decode_safelink(safelink_input["value"])
-        try:
-            delay = max(0.0, float(payload.get("delay", 25)))
-        except (TypeError, ValueError):
-            delay = 25.0
-        linkr = payload.get("linkr")
-        if linkr:
-            return Action("wait_get", url=urljoin(base_url, str(linkr)), delay=delay)
-        safelink_form = safelink_input.find_parent("form")
-        if safelink_form is not None:
-            return Action(
-                "wait_post_form",
-                url=urljoin(base_url, safelink_form.get("action") or base_url),
-                fields=form_fields(safelink_form),
-                delay=delay,
-            )
-
-    landing = soup.find("form", id="landing")
-    if landing is None:
-        go_input = soup.find("input", {"name": "go"})
-        if go_input is not None:
-            landing = go_input.find_parent("form")
-    if landing is not None:
-        fields = form_fields(landing)
-        if "go" in fields:
-            return Action(
-                "post_form",
-                url=urljoin(base_url, landing.get("action") or base_url),
-                fields=fields,
-            )
-
-    op_input = soup.find("input", {"name": "op"})
-    if op_input is not None and "download" in (op_input.get("value") or "").lower():
-        download_form = op_input.find_parent("form")
-        if download_form is not None:
-            return Action(
-                "post_form",
-                url=urljoin(base_url, download_form.get("action") or base_url),
-                fields=form_fields(download_form),
-            )
-
-    meta = soup.find("meta", attrs={"http-equiv": re.compile(r"refresh", re.I)})
-    if meta is not None:
-        content = meta.get("content", "")
-        match = re.search(r"url\s*=\s*([^;]+)", content, re.I)
-        if match:
-            target = match.group(1).strip().strip("'\"")
-            return Action("goto", url=urljoin(base_url, target))
-
-    for pattern in (
-        r'window\.location(?:\.href)?\s*=\s*["\']([^"\']+)["\']',
-        r'window\.location\.replace\(\s*["\']([^"\']+)["\']\s*\)',
-        r'location\.href\s*=\s*["\']([^"\']+)["\']',
-    ):
-        match = re.search(pattern, html)
-        if match:
-            target = match.group(1).strip()
-            if target.startswith(("http://", "https://", "/")):
-                return Action("goto", url=urljoin(base_url, target))
-
-    download_attr = soup.find("a", attrs={"download": True}, href=True)
-    if download_attr is not None:
-        return Action("mediafire", url=urljoin(base_url, download_attr["href"].strip()))
-
-    return None
-
-
 def is_html_response(response: requests.Response) -> bool:
     content_type = response.headers.get("content-type", "").lower()
     if "html" in content_type or "xhtml" in content_type:
@@ -453,6 +409,60 @@ def is_html_response(response: requests.Response) -> bool:
     if content_type:
         return False
     return True
+
+
+SHORTENER_MARKERS = (
+    "ad_form_data",
+    "newwpsafelink",
+    "go-link",
+    "links/go",
+    "get-link",
+    "getlink",
+    "continue-btn",
+    "btn-continue",
+    "skip-btn",
+    "skipbutton",
+    "btn-skip",
+    "go-btn",
+    "counter_value",
+)
+SHORTENER_HOSTS = (
+    "softurl.in",
+    "zflexlink.com",
+    "zflexlinks.com",
+    "iflylink.com",
+    "shortxlinks.in",
+    "shortxlinks.com",
+    "ouo.io",
+    "ouo.press",
+    "shrinkme.io",
+    "shrinke.me",
+    "exe.io",
+    "exey.io",
+    "linkshrink.net",
+    "adf.ly",
+    "gplinks.co",
+    "gplinks.in",
+    "try2link.com",
+    "droplink.co",
+)
+
+
+def looks_like_shortener(html: str, url: str) -> bool:
+    """Heurística para distinguir un paso de acortador de la página final.
+
+    Las heurísticas laxas (enlaces \"continuar\", variables JS con URLs) sólo
+    se aplican en páginas que parecen acortadores; así no se encadenan los
+    enlaces internos de un artículo o blog de destino.
+    """
+    try:
+        host = urlsplit(url).netloc.lower()
+    except ValueError:
+        host = ""
+    if any(h in host for h in SHORTENER_HOSTS):
+        return True
+    low_html = html.lower()
+    return any(marker in low_html for marker in SHORTENER_MARKERS)
 
 
 def is_challenge(status: int, html: str) -> bool:
@@ -484,6 +494,210 @@ def unique_path(path: Path, avoid: set[Path] | None = None) -> Path:
         if available(candidate):
             return candidate
     return path.with_name(f"{stem}-{int(time.time())}{suffix}")
+
+
+def detect_action(html: str, base_url: str) -> Action | None:
+    """Detecta la acción requerida para avanzar en un redirector de anuncios."""
+    # Redirector de búsqueda: el destino viaja en la propia URL.
+    redirect_target = extract_search_redirect_target(base_url)
+    if redirect_target is not None:
+        return Action("goto", url=redirect_target)
+
+    soup = BeautifulSoup(html, "html.parser")
+    is_shortener = looks_like_shortener(html, base_url)
+
+    # AdLinkFly: formulario go-link con ad_form_data
+    go_form = soup.find("form", id="go-link")
+    if go_form is None:
+        ad_input = soup.find("input", {"name": "ad_form_data"})
+        if ad_input is not None:
+            go_form = ad_input.find_parent("form")
+    if go_form is not None:
+        fields = form_fields(go_form)
+        if "ad_form_data" in fields:
+            action_url = urljoin(base_url, go_form.get("action") or base_url)
+            return Action("xhr_post", url=action_url, fields=fields, delay=parse_counter(html))
+
+    # WP Safelink
+    safelink_input = soup.find("input", {"name": "newwpsafelink"})
+    if safelink_input is not None and safelink_input.get("value"):
+        payload = decode_safelink(safelink_input["value"])
+        try:
+            delay = max(0.0, float(payload.get("delay", 25)))
+        except (TypeError, ValueError):
+            delay = 25.0
+        linkr = payload.get("linkr")
+        if linkr:
+            return Action("wait_get", url=urljoin(base_url, str(linkr)), delay=delay)
+        safelink_form = safelink_input.find_parent("form")
+        if safelink_form is not None:
+            return Action(
+                "wait_post_form",
+                url=urljoin(base_url, safelink_form.get("action") or base_url),
+                fields=form_fields(safelink_form),
+                delay=delay,
+            )
+
+    # Formularios de aterrizaje (landing / go / download)
+    for form_id in ("landing", None):
+        landing = soup.find("form", id=form_id) if form_id else None
+        if landing is None:
+            go_input = soup.find("input", {"name": "go"})
+            if go_input is not None:
+                landing = go_input.find_parent("form")
+        if landing is not None:
+            fields = form_fields(landing)
+            if "go" in fields:
+                return Action(
+                    "post_form",
+                    url=urljoin(base_url, landing.get("action") or base_url),
+                    fields=fields,
+                )
+
+    op_input = soup.find("input", {"name": "op"})
+    if op_input is not None and "download" in (op_input.get("value") or "").lower():
+        download_form = op_input.find_parent("form")
+        if download_form is not None:
+            return Action(
+                "post_form",
+                url=urljoin(base_url, download_form.get("action") or base_url),
+                fields=form_fields(download_form),
+            )
+
+    # MediaFire
+    download_button = soup.find("a", id="downloadButton")
+    if download_button is not None and download_button.get("href"):
+        href = urljoin(base_url, download_button["href"].strip())
+        return Action("mediafire", url=href, filename=filename_from_url(href) or "")
+
+    # Meta refresh
+    meta = soup.find("meta", attrs={"http-equiv": re.compile(r"refresh", re.I)})
+    if meta is not None:
+        content = meta.get("content", "")
+        match = re.search(r"url\s*=\s*([^;]+)", content, re.I)
+        if match:
+            target = match.group(1).strip().strip("'\"")
+            return Action("goto", url=urljoin(base_url, target))
+
+    # JavaScript redirects
+    for pattern in (
+        r'window\.location(?:\.href)?\s*=\s*["\']([^"\']+)["\']',
+        r'window\.location\.replace\(\s*["\']([^"\']+)["\']\s*\)',
+        r'location\.href\s*=\s*["\']([^"\']+)["\']',
+        r'location\.replace\(\s*["\']([^"\']+)["\']\s*\)',
+        r'top\.location\.href\s*=\s*["\']([^"\']+)["\']',
+        r'top\.location\s*=\s*["\']([^"\']+)["\']',
+        r'document\.location(?:\.href)?\s*=\s*["\']([^"\']+)["\']',
+        r'self\.location\s*=\s*["\']([^"\']+)["\']',
+    ):
+        match = re.search(pattern, html)
+        if match:
+            target = match.group(1).strip()
+            if target.startswith(("http://", "https://", "/")):
+                return Action("goto", url=urljoin(base_url, target))
+
+    # Enlaces de descarga genéricos con atributo download (sólo en acortadores)
+    download_attr = soup.find("a", attrs={"download": True}, href=True)
+    if download_attr is not None:
+        href = urljoin(base_url, download_attr["href"].strip())
+        return Action("mediafire", url=href, filename=filename_from_url(href) or "")
+
+    # Botones que guardan el destino en atributos data-* (sólo en acortadores)
+    if is_shortener:
+        for attribute in ("data-href", "data-url", "data-clipboard-text", "data-link"):
+            for element in soup.find_all(attrs={attribute: True}):
+                target = (element.get(attribute) or "").strip()
+                if target.startswith(("http://", "https://", "/")):
+                    return Action("goto", url=urljoin(base_url, target))
+
+    KNOWN_REDIRECT_FIELDS = {
+        "go", "op", "id", "token", "url", "next", "continue", "step",
+        "ad_form_data", "_csrfToken", "newwpsafelink",
+    }
+
+    def _is_redirect_form(form, fields):
+        if not fields:
+            return False
+        inputs = form.find_all("input")
+        all_hidden = bool(inputs) and all(
+            (inp.get("type") or "text").lower() == "hidden" for inp in inputs
+        )
+        known = any(name.lower() in KNOWN_REDIRECT_FIELDS for name in fields)
+        return all_hidden or known
+
+    # Formularios genéricos de redirección: si hay un único form con inputs ocultos
+    forms = soup.find_all("form")
+    if len(forms) == 1:
+        form = forms[0]
+        fields = form_fields(form)
+        if _is_redirect_form(form, fields):
+            action_url = urljoin(base_url, form.get("action") or base_url)
+            method = (form.get("method") or "GET").upper()
+            if method == "POST":
+                return Action("post_form", url=action_url, fields=fields)
+            if any(k in fields for k in ("next", "continue", "go")):
+                return Action("goto", url=action_url)
+
+    # Enlaces "continuar / saltar / obtener enlace" (sólo en acortadores)
+    for anchor in (soup.find_all("a", href=True) if is_shortener else []):
+        text = anchor.get_text(" ", strip=True).lower()
+        classes = " ".join(anchor.get("class", [])).lower()
+        if any(keyword in text or keyword in classes for keyword in (
+            "continue", "skip", "get link", "download", "continuar", "saltar",
+            "proceed", "next", "siguiente",
+        )):
+            href = anchor["href"].strip()
+            if href and not href.startswith("#") and not href.lower().startswith("javascript:"):
+                return Action("goto", url=urljoin(base_url, href))
+
+    # Botones con onclick que redirigen (sólo en acortadores)
+    for element in (soup.find_all(attrs={"onclick": True}) if is_shortener else []):
+        onclick = element.get("onclick", "")
+        for pattern in (
+            r'window\.location(?:\.href)?\s*=\s*["\']([^"\']+)["\']',
+            r'location\.href\s*=\s*["\']([^"\']+)["\']',
+            r'location\s*=\s*["\']([^"\']+)["\']',
+            r'window\.open\(\s*["\']([^"\']+)["\']',
+        ):
+            match = re.search(pattern, onclick)
+            if match:
+                target = match.group(1).strip()
+                if target.startswith(("http://", "https://", "/")):
+                    return Action("goto", url=urljoin(base_url, target))
+
+    # JavaScript: variables con URLs y setTimeout (sólo en acortadores)
+    for pattern in (
+        r'var\s+\w*(?:url|link|redirect|target|dest)\w*\s*=\s*["\']([^"\']+)["\']',
+        r'let\s+\w*(?:url|link|redirect|target|dest)\w*\s*=\s*["\']([^"\']+)["\']',
+        r'const\s+\w*(?:url|link|redirect|target|dest)\w*\s*=\s*["\']([^"\']+)["\']',
+        r'setTimeout\(\s*["\'][^"\']*?location(?:\.href)?\s*=\s*["\']([^"\']+)["\'][^"\']*?["\']',
+        r'setTimeout\(\s*function\s*\(\)\s*\{[^}]*?location(?:\.href)?\s*=\s*["\']([^"\']+)["\'][^}]*?\}\s*,',
+        r'window\.open\(\s*["\']([^"\']+)["\']',
+        r'location\s*=\s*["\']([^"\']+)["\']',
+    ):
+        if not is_shortener:
+            break
+        match = re.search(pattern, html, re.I | re.S)
+        if match:
+            target = match.group(1).strip()
+            if target.startswith(("http://", "https://", "/")):
+                return Action("goto", url=urljoin(base_url, target))
+
+    # Formularios genéricos con un único form (ya cubierto arriba, pero por si acaso)
+    forms = soup.find_all("form")
+    if len(forms) == 1:
+        form = forms[0]
+        fields = form_fields(form)
+        if _is_redirect_form(form, fields):
+            action_url = urljoin(base_url, form.get("action") or base_url)
+            method = (form.get("method") or "GET").upper()
+            if method == "POST":
+                return Action("post_form", url=action_url, fields=fields)
+            # GET con parámetros de continuación
+            if any(k in fields for k in ("next", "continue", "go", "id", "token")):
+                return Action("goto", url=action_url + "?" + urlencode(fields))
+
+    return None
 
 
 class LinkResolver:
@@ -540,6 +754,7 @@ class LinkResolver:
         *,
         data: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
+        referer: str | None = None,
         stream: bool = True,
     ) -> requests.Response:
         request_headers: dict[str, str] = {}
@@ -547,6 +762,8 @@ class LinkResolver:
             request_headers.update(headers)
         if method.upper() == "POST" and "Origin" not in request_headers:
             request_headers["Origin"] = origin_of(url)
+        if referer and "Referer" not in request_headers:
+            request_headers["Referer"] = referer
         response = self.session.request(
             method,
             url,
@@ -559,6 +776,7 @@ class LinkResolver:
         return response
 
     def _wait(self, seconds: float, reason: str) -> None:
+        seconds = max(0.0, seconds)
         if seconds > self.max_wait:
             raise ResolveError(
                 f"La espera requerida ({seconds:.0f}s) supera --max-wait "
@@ -571,6 +789,10 @@ class LinkResolver:
     def _prepare_start(self, url: str) -> str:
         target = extract_wrapper_target(url)
         if target is None:
+            return url
+        host = urlsplit(url).netloc.lower()
+        is_wrapper = "vercel.app" in host and "web-api" in host
+        if not is_wrapper:
             return url
         if not self.full_chain:
             self._log(f"Wrapper detectado; usando destino directo: {redact_url(target)}")
@@ -608,7 +830,8 @@ class LinkResolver:
                 else:
                     if result.page_url is None:
                         result.page_url = page_url
-                    self.cache.put(key, result.page_url, result.filename)
+                    if self.cache is not None:
+                        self.cache.put(key, result.page_url, result.filename)
                     return result
 
         result = self._resolve_from(start_url)
@@ -622,8 +845,9 @@ class LinkResolver:
         data: dict[str, str] | None = None
         referer: str | None = None
         visit_counts: dict[tuple[str, str], int] = {}
+        hops = 0
 
-        for hop in range(1, self.max_hops + 1):
+        for _ in range(1, self.max_hops + 1):
             key = (method, url)
             count = visit_counts.get(key, 0)
             if count >= 3:
@@ -633,12 +857,12 @@ class LinkResolver:
             headers: dict[str, str] = {}
             if referer:
                 headers["Referer"] = referer
-            response = self._request(method, url, data=data, headers=headers)
+            response = self._request(method, url, data=data, headers=headers, stream=True)
             response_url = response.url
             status = response.status_code
 
             self._log(
-                f"[{hop}] {method} {redact_url(url)} -> "
+                f"[{len(visit_counts)}] {method} {redact_url(url)} -> "
                 f"{status} {redact_url(response_url)}"
             )
             for redirect in response.history:
@@ -646,6 +870,16 @@ class LinkResolver:
             if self.verbose:
                 content_type = response.headers.get("content-type", "?")
                 self._log(f"    content-type: {content_type}")
+
+            redirect_target = extract_search_redirect_target(response_url)
+            if redirect_target is not None:
+                self._log(
+                    f"    redirector de búsqueda; destino directo: "
+                    f"{redact_url(redirect_target)}"
+                )
+                response.close()
+                method, url, data, referer = "GET", redirect_target, None, response_url
+                continue
 
             if status >= 400:
                 html = response.text[:1000] if is_html_response(response) else ""
@@ -657,6 +891,7 @@ class LinkResolver:
                     )
                 raise ResolveError(f"HTTP {status} en {redact_url(response_url)}")
 
+            # Archivo directo (no HTML)
             if not is_html_response(response):
                 filename = (
                     filename_from_disposition(
@@ -669,13 +904,13 @@ class LinkResolver:
                     final_url=response_url,
                     filename=sanitize_filename(filename),
                     referer=referer or response_url,
-                    hops=hop,
+                    hops=len(visit_counts),
                 )
                 response.close()
                 return result
 
             html = response.text
-            action = detect_action(html, base_url=response_url)
+            action = detect_action(html, response_url)
             if action is not None and self.verbose:
                 self._log(f"    acción detectada: {action.kind}")
             if action is None:
@@ -685,6 +920,19 @@ class LinkResolver:
                     time.sleep(3)
                     method, url, data = "GET", response_url, None
                     continue
+                if not looks_like_shortener(html, response_url):
+                    self._log("    página final detectada (sin más pasos de acortador)")
+                    result = Resolution(
+                        final_url=response_url,
+                        filename=sanitize_filename(
+                            filename_from_url(response_url) or "download.bin"
+                        ),
+                        referer=referer or response_url,
+                        hops=len(visit_counts),
+                        page_url=response_url,
+                    )
+                    response.close()
+                    return result
                 title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
                 title = title_match.group(1).strip() if title_match else "sin título"
                 response.close()
@@ -715,7 +963,7 @@ class LinkResolver:
                     "Accept": "application/json, text/javascript, */*; q=0.01",
                 }
                 xhr = self._request(
-                    "POST", action.url, data=action.fields, headers=xhr_headers
+                    "POST", action.url, data=action.fields, headers=xhr_headers, stream=False
                 )
                 try:
                     if xhr.status_code >= 400:
@@ -736,18 +984,19 @@ class LinkResolver:
                     message = payload.get("message", "respuesta sin URL")
                     raise ResolveError(f"El servidor no devolvió URL: {message}")
                 self._log("    enlace final obtenido del contador")
-                method, url, data, referer = "GET", str(next_url), None, response_url
+                method, url, data, referer = "GET", urljoin(response_url, str(next_url)), None, response_url
             elif kind == "mediafire":
                 self._log("    enlace directo de descarga detectado")
-                return Resolution(
+                result = Resolution(
                     final_url=action.url,
                     filename=sanitize_filename(
                         action.filename or filename_from_url(action.url) or "download.bin"
                     ),
                     referer=response_url,
-                    hops=hop,
+                    hops=len(visit_counts),
                     page_url=response_url,
                 )
+                return result
             else:
                 raise ResolveError(f"Acción no soportada: {kind}")
 
@@ -788,6 +1037,20 @@ class LinkResolver:
                 )
             content_type = response.headers.get("content-type", "").lower()
             if "text/html" in content_type:
+                if target.page_url:
+                    filename = sanitize_filename("enlace.url")
+                    destination = self._destination(
+                        output, filename, as_dir=as_dir, force=force
+                    )
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_text(
+                        f"[InternetShortcut]\nURL={target.final_url}\n",
+                        encoding="utf-8",
+                    )
+                    self._log(
+                        "    el destino final es HTML; guardado acceso directo .url"
+                    )
+                    return destination
                 snippet = response.text[:300]
                 raise ResolveError(
                     "El enlace de descarga devolvió HTML en vez del archivo "
@@ -871,6 +1134,176 @@ class LinkResolver:
             return destination
 
 
+def browser_resolve_and_download(
+    start_url: str,
+    output: str | None,
+    *,
+    force: bool = False,
+    as_dir: bool = True,
+    timeout: float = DEFAULT_TIMEOUT,
+    max_wait: float = DEFAULT_MAX_WAIT,
+    verbose: bool = False,
+    save: bool = True,
+) -> tuple[str, str, Path | None]:
+    """Resuelve y descarga usando un navegador headless (Chromium).
+
+    Con ``save=False`` no escribe el archivo capturado: sólo devuelve la URL
+    final (útil para el modo \"sólo enlace\").
+
+    Devuelve (url_final, nombre_archivo, ruta_destino). Si no se capturó
+    una descarga directa, ``ruta_destino`` es None y la descarga debe
+    hacerse por HTTP a partir de ``url_final``.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise ResolveError(
+            "Playwright no está instalado. Para usar --browser:\n"
+            "  pip install playwright\n"
+            "  playwright install chromium"
+        ) from exc
+
+    final_url = start_url
+    filename = "download.bin"
+    destination: Path | None = None
+    captured = {"download": None}
+
+    def on_download(d) -> None:
+        if captured["download"] is None:
+            captured["download"] = d
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent=DEFAULT_UA,
+                viewport={"width": 1366, "height": 768},
+                accept_downloads=True,
+            )
+            page = context.new_page()
+
+            # Capturar descargas en cualquier pestaña
+            pages: list = [page]
+
+            def on_page(new_page) -> None:
+                pages.append(new_page)
+                try:
+                    new_page.on("download", on_download)
+                except Exception:
+                    pass
+
+            page.on("download", on_download)
+            context.on("page", on_page)
+
+            try:
+                page.goto(start_url, wait_until="domcontentloaded",
+                          timeout=int(timeout * 1000))
+            except Exception:
+                pass
+
+            deadline = time.monotonic() + max_wait
+            last_url = page.url
+
+            click_selectors = [
+                "#mainButton",
+                "button#mainButton",
+                "a#mainButton",
+                "#downloadButton",
+                "a#downloadButton",
+                "#skip_button",
+                "#skip_ad_button",
+                "a:has-text('Skip')",
+                "a:has-text('Continue')",
+                "a:has-text('Get Link')",
+                "a:has-text('Download')",
+                "a:has-text('Continuar')",
+                "a:has-text('Saltar')",
+                "a:has-text('Proceed')",
+                "a:has-text('Next')",
+                "button:has-text('Skip')",
+                "button:has-text('Continue')",
+                "button:has-text('Download')",
+                "button:has-text('Get Link')",
+                "input[type='submit']",
+                "button[type='submit']",
+            ]
+
+            while time.monotonic() < deadline and captured["download"] is None:
+                url = page.url
+                if url and url != last_url:
+                    last_url = url
+                    final_url = url
+                    if verbose:
+                        print(f"[browser] {url}", file=sys.stderr, flush=True)
+
+                clicked = False
+                for selector in click_selectors:
+                    try:
+                        loc = page.locator(selector).first
+                        if loc.is_visible(timeout=300):
+                            loc.click(timeout=2000)
+                            clicked = True
+                            break
+                    except Exception:
+                        continue
+
+                if clicked:
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=5000)
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
+                    continue
+
+                time.sleep(1)
+
+            final_url = page.url or final_url
+
+            if captured["download"] is not None:
+                d = captured["download"]
+                final_url = d.url
+                filename = sanitize_filename(
+                    d.suggested_filename or filename_from_url(final_url) or "download.bin"
+                )
+                resolver = LinkResolver(timeout=timeout, max_wait=max_wait, verbose=verbose)
+                if save:
+                    destination = resolver._destination(
+                        output, filename, as_dir=as_dir, force=force
+                    )
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    d.save_as(str(destination))
+                # Importar cookies al session por si se necesitan luego
+                try:
+                    for c in context.cookies():
+                        resolver.session.cookies.set(
+                            c["name"], c["value"], domain=c.get("domain"), path=c.get("path", "/")
+                        )
+                except Exception:
+                    pass
+                browser.close()
+                return final_url, filename, destination
+
+            # Sin descarga directa: importar cookies y devolver URL
+            try:
+                resolver = LinkResolver(timeout=timeout, max_wait=max_wait, verbose=verbose)
+                for c in context.cookies():
+                    resolver.session.cookies.set(
+                        c["name"], c["value"], domain=c.get("domain"), path=c.get("path", "/")
+                    )
+            except Exception:
+                pass
+            browser.close()
+    except ResolveError:
+        raise
+    except Exception as exc:
+        raise ResolveError(f"Error en modo navegador: {exc}") from exc
+
+    # Si llegamos aquí, no hubo descarga capturada
+    if "resolver" not in locals():
+        resolver = LinkResolver(timeout=timeout, max_wait=max_wait, verbose=verbose)
+    return final_url, filename, None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -904,6 +1337,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--full-chain",
         action="store_true",
         help="Seguir el wrapper /api/shorten en vez de extraer el destino directo",
+    )
+    parser.add_argument(
+        "--browser",
+        action="store_true",
+        help="Usar un navegador headless (Chromium) como fallback para webs complejas.",
+    )
+    parser.add_argument(
+        "--auto-browser",
+        action="store_true",
+        help="Si el modo HTTP falla, reintentar automáticamente con navegador.",
     )
     parser.add_argument(
         "--force",
@@ -1023,6 +1466,40 @@ def main(argv: list[str] | None = None) -> int:
             prefix=prefix,
         )
         try:
+            if args.browser:
+                final_url, filename, destination = browser_resolve_and_download(
+                    start_url,
+                    args.output,
+                    force=args.force,
+                    as_dir=as_dir,
+                    timeout=args.timeout,
+                    max_wait=args.max_wait,
+                    verbose=args.verbose,
+                )
+                result = Resolution(
+                    final_url=final_url,
+                    filename=sanitize_filename(filename),
+                    referer=start_url,
+                    hops=0,
+                )
+                if args.info:
+                    return JobResult(
+                        index,
+                        start_url,
+                        result,
+                        elapsed=time.monotonic() - started,
+                    )
+                if destination is None:
+                    destination = resolver.download(
+                        result, args.output, force=args.force, as_dir=as_dir
+                    )
+                return JobResult(
+                    index,
+                    start_url,
+                    result,
+                    destination,
+                    elapsed=time.monotonic() - started,
+                )
             result = resolver.resolve(start_url, use_cache=not args.refresh)
             if args.info:
                 return JobResult(
@@ -1053,6 +1530,48 @@ def main(argv: list[str] | None = None) -> int:
                 elapsed=time.monotonic() - started,
             )
         except Exception as exc:
+            if args.auto_browser and not args.browser:
+                try:
+                    final_url, filename, destination = browser_resolve_and_download(
+                        start_url,
+                        args.output,
+                        force=args.force,
+                        as_dir=as_dir,
+                        timeout=args.timeout,
+                        max_wait=args.max_wait,
+                        verbose=args.verbose,
+                    )
+                    result = Resolution(
+                        final_url=final_url,
+                        filename=sanitize_filename(filename),
+                        referer=start_url,
+                        hops=0,
+                    )
+                    if args.info:
+                        return JobResult(
+                            index,
+                            start_url,
+                            result,
+                            elapsed=time.monotonic() - started,
+                        )
+                    if destination is None:
+                        destination = resolver.download(
+                            result, args.output, force=args.force, as_dir=as_dir
+                        )
+                    return JobResult(
+                        index,
+                        start_url,
+                        result,
+                        destination,
+                        elapsed=time.monotonic() - started,
+                    )
+                except Exception as exc2:
+                    return JobResult(
+                        index,
+                        start_url,
+                        error=exc2,
+                        elapsed=time.monotonic() - started,
+                    )
             return JobResult(
                 index,
                 start_url,

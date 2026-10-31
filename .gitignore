@@ -5,7 +5,7 @@ venv/
 .venv/
 
 # Caché de resolución y datos locales
-.resolve_cache.json
+.desenlace_cache.json
 downloads/
 
 # Enlaces personales

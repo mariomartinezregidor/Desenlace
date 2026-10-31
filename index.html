@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Descargador de enlaces</title>
+<title>Desenlace</title>
 <style>
   :root {
     --fondo: #12141a;
@@ -127,24 +127,29 @@
   .aviso.ok { color: var(--ok); }
   .aviso.error { color: var(--error); }
   .oculto { display: none; }
+  .atenuado { opacity: .45; }
+  #resultadosTexto { min-height: 140px; }
 </style>
 </head>
 <body>
 <main>
-  <h1>Descargador de enlaces</h1>
+  <h1>Desenlace</h1>
   <p class="sub">Pega los enlaces, elige la carpeta del PC y pulsa Descargar.</p>
 
   <section class="panel">
     <label for="enlaces">Enlaces (uno por línea)</label>
     <textarea id="enlaces" placeholder="https://softurl.in/XXXX&#10;https://web-api-13.vercel.app/?url=https://softurl.in/YYYY"></textarea>
 
-    <div class="fila" style="margin-top:14px">
+    <div class="fila" style="margin-top:14px" id="filaCarpeta">
       <input type="text" id="carpeta" placeholder="Carpeta de destino" readonly>
       <button id="btnCarpeta" type="button">Seleccionar carpeta</button>
     </div>
 
     <div class="opciones">
-      <label><input type="checkbox" id="force"> Sobrescribir archivos existentes</label>
+      <label><input type="checkbox" id="soloEnlace"> Solo obtener enlace final (no descargar)</label>
+      <label style="margin-left:16px"><input type="checkbox" id="force"> Sobrescribir archivos existentes</label>
+      <label style="margin-left:16px"><input type="checkbox" id="browser"> Usar navegador (webs complejas/anti-bot)</label>
+      <label style="margin-left:16px"><input type="checkbox" id="autoBrowser"> Auto-navegador si falla</label>
     </div>
 
     <button class="principal" id="btnDescargar" type="button">Descargar</button>
@@ -168,12 +173,37 @@
       <button id="btnCancelar" class="peligro" type="button">Cancelar</button>
     </div>
   </section>
+
+  <section class="panel oculto" id="panelResultados">
+    <div class="meta">
+      <span>Enlaces finales</span>
+      <span id="textoResultados"></span>
+    </div>
+    <textarea id="resultadosTexto" readonly placeholder="Aquí aparecerán los enlaces resueltos."></textarea>
+    <div class="fila" style="margin-top:14px">
+      <button id="btnCopiar" type="button">Copiar todos</button>
+    </div>
+  </section>
 </main>
 
 <script>
 const $ = (id) => document.getElementById(id);
 let jobId = null;
 let temporizador = null;
+let modoSolo = false;
+
+function actualizarModo() {
+  modoSolo = $("soloEnlace").checked;
+  $("filaCarpeta").classList.toggle("atenuado", modoSolo);
+  $("carpeta").disabled = modoSolo;
+  $("btnCarpeta").disabled = modoSolo;
+  $("btnDescargar").textContent = modoSolo ? "Obtener enlaces" : "Descargar";
+  document.querySelector("p.sub").textContent = modoSolo
+    ? "Pega los enlaces y pulsa Obtener enlaces: se resolverán sin descargar."
+    : "Pega los enlaces, elige la carpeta del PC y pulsa Descargar.";
+}
+
+$("soloEnlace").addEventListener("change", actualizarModo);
 
 function humanBytes(n) {
   if (!n) return "0 B";
@@ -207,9 +237,12 @@ $("btnDescargar").addEventListener("click", async () => {
   const enlaces = $("enlaces").value.trim();
   const carpeta = $("carpeta").value.trim();
   if (!enlaces) { alert("Pega al menos un enlace."); return; }
-  if (!carpeta) { alert("Selecciona una carpeta de destino."); return; }
+  if (!carpeta && !modoSolo) { alert("Selecciona una carpeta de destino."); return; }
 
   $("panelProgreso").classList.remove("oculto");
+  $("panelResultados").classList.add("oculto");
+  $("resultadosTexto").value = "";
+  $("textoResultados").textContent = "";
   $("log").style.color = "var(--suave)";
   $("log").textContent = "";
   $("btnDescargar").disabled = true;
@@ -224,7 +257,7 @@ $("btnDescargar").addEventListener("click", async () => {
     const r = await fetch("/api/descargar", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enlaces, carpeta, force: $("force").checked })
+      body: JSON.stringify({ enlaces, carpeta, force: $("force").checked, browser: $("browser").checked, autoBrowser: $("autoBrowser").checked, soloEnlace: modoSolo })
     });
     const datos = await r.json();
     if (!r.ok || datos.error) {
@@ -276,7 +309,7 @@ async function consultarEstado() {
     $("barraArchivo").classList.remove("indeterminada");
     $("progresoArchivo").style.width = Math.min(100, Math.round(datos.descargado / datos.total_bytes * 100)) + "%";
   }
-  $("textoArchivo").textContent = "Archivo actual: " + (datos.archivo || "—");
+  $("textoArchivo").textContent = (modoSolo ? "Enlace actual: " : "Archivo actual: ") + (datos.archivo || "—");
   $("textoBytes").textContent = datos.total_bytes
     ? `${humanBytes(datos.descargado)} / ${humanBytes(datos.total_bytes)}`
     : (datos.descargado ? humanBytes(datos.descargado) : "");
@@ -298,10 +331,34 @@ async function consultarEstado() {
     };
     $("textoEstado").textContent = `${etiquetas[datos.estado] || datos.estado} · ${datos.transcurrido}s`;
     $("log").style.color = datos.fallidos ? "var(--error)" : "var(--ok)";
+    mostrarResultados(datos.resultados);
   } else {
-    $("textoEstado").textContent = `Descargando ${datos.indice}/${datos.total} · ${datos.transcurrido}s`;
+    $("textoEstado").textContent = `${modoSolo ? "Resolviendo" : "Descargando"} ${datos.indice}/${datos.total} · ${datos.transcurrido}s`;
   }
 }
+
+function mostrarResultados(resultados) {
+  const finales = (resultados || [])
+    .filter((r) => r.estado === "ok" && r.final)
+    .map((r) => r.final);
+  if (!finales.length) return;
+  $("resultadosTexto").value = finales.join("\n");
+  $("textoResultados").textContent = `${finales.length} enlace${finales.length === 1 ? "" : "s"}`;
+  $("panelResultados").classList.remove("oculto");
+}
+
+$("btnCopiar").addEventListener("click", async () => {
+  const texto = $("resultadosTexto").value;
+  if (!texto) return;
+  try {
+    await navigator.clipboard.writeText(texto);
+  } catch (e) {
+    $("resultadosTexto").select();
+    document.execCommand("copy");
+  }
+  $("btnCopiar").textContent = "Copiado";
+  setTimeout(() => { $("btnCopiar").textContent = "Copiar todos"; }, 1500);
+});
 </script>
 </body>
 </html>
