@@ -1,3 +1,0 @@
-[console_scripts]
-desenlace = cli:main
-desenlace-web = desenlace_web:main

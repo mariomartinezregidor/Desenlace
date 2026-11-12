@@ -30,3 +30,8 @@ cookies/
 
 # Sistema
 .DS_Store
+
+# Artefactos de empaquetado
+build/
+dist/
+*.egg-info/
