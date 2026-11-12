@@ -40,6 +40,7 @@ __all__ = [
     "PLUGINS",
     "SHORTENER_HOSTS",
     "SHORTENER_MARKERS",
+    "build_browser_plan",
     "detect_action",
     "discover_plugins",
     "looks_like_shortener",
@@ -158,6 +159,32 @@ def detect_action(html: str, base_url: str) -> Action | None:
         action = plugin.detect(ctx)
         if action is not None:
             return action
+    return None
+
+
+def build_browser_plan(html: str, base_url: str) -> list[dict[str, object]] | None:
+    """Pide a los plugins un plan de acciones para el navegador headless.
+
+    Se consulta cuando el motor HTTP no encuentra una acción válida. El primer
+    plugin que devuelve un plan no vacío gana.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    ctx = PageContext(
+        html=html,
+        base_url=base_url,
+        soup=soup,
+        is_shortener=looks_like_shortener(html, base_url),
+    )
+    for plugin in discover_plugins():
+        if plugin.browser_plan is None:
+            continue
+        try:
+            plan = plugin.browser_plan(ctx)
+        except Exception as exc:  # un plan roto no debe tumbar la resolución
+            warnings.warn(f"El plugin {plugin.name!r} falló al planificar: {exc}")
+            continue
+        if plan:
+            return list(plan)
     return None
 
 

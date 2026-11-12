@@ -6,7 +6,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import plugins  # noqa: E402
-from desenlace import detect_action, looks_like_shortener, normalize_url  # noqa: E402
+from desenlace import (  # noqa: E402
+    build_browser_plan,
+    detect_action,
+    looks_like_shortener,
+    normalize_url,
+)
 
 
 class PluginRegistryTests(unittest.TestCase):
@@ -30,6 +35,24 @@ class PluginRegistryTests(unittest.TestCase):
             looks_like_shortener("<html>blog normal</html>", "https://blog.example/x")
         )
 
+    def test_multi_click_plugin_generates_sequence(self):
+        html = (
+            "<html><body><p>Paso 1: haz clic aquí</p>"
+            '<button id="step1">Clic aquí</button>'
+            '<button id="download">Descargar</button>'
+            "</body></html>"
+        )
+        plan = build_browser_plan(html, "https://download.example/paso-1")
+        self.assertIsNotNone(plan)
+        kinds = [step["kind"] for step in plan]
+        self.assertIn("click", kinds)
+        self.assertIn("close_popup", kinds)
+        self.assertIn("extract_url", kinds)
+        self.assertEqual(plan[-1]["kind"], "extract_url")
+        selectors = [step.get("selector") for step in plan]
+        self.assertIn("#step1", selectors)
+        self.assertIn("#download", selectors)
+
     def test_normalize_url_uses_plugin(self):
         self.assertEqual(
             normalize_url("https://pixeldrain.com/u/abc123"),
@@ -51,6 +74,7 @@ class PluginRegistryTests(unittest.TestCase):
                 plugin.detect
                 or plugin.detect_url
                 or plugin.normalize
+                or plugin.browser_plan
                 or plugin.hosts
                 or plugin.markers,
                 f"{plugin.name} no hace nada",

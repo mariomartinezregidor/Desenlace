@@ -19,7 +19,9 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -92,7 +94,12 @@ from browser_resolver import (
     browser_resolve_and_download as _browser_resolve_and_download,
     is_bot_challenge,
 )
-from plugins import detect_action, looks_like_shortener, normalize_url
+from plugins import (
+    build_browser_plan,
+    detect_action,
+    looks_like_shortener,
+    normalize_url,
+)
 from plugins.file_hosts import normalize_file_host_url
 from plugins.redirectors import (
     extract_redirect_target,
@@ -159,6 +166,9 @@ class Resolution:
     referer: str
     hops: int
     page_url: str | None = None
+    # Archivo ya descargado por el navegador/Telethon y pendiente de mover
+    # al destino definitivo cuando el usuario llame a download().
+    prefetched: Path | None = None
 
 
 @dataclass
@@ -542,36 +552,7 @@ class LinkResolver:
             self._log(f"    esperando {seconds:.1f}s ({reason})...")
             time.sleep(seconds)
 
-    def _browser_rescue(self, url: str, reason: str) -> str | None:
-        """Intenta superar un challenge anti-bot con Playwright.
-
-        Sólo se ejecuta si ``browser_fallback`` está activo y una vez por URL.
-        Devuelve la nueva URL si el navegador avanzó; ``None`` en caso contrario.
-        """
-        if not self.browser_fallback:
-            return None
-        if url in self._browser_attempted:
-            return None
-        self._browser_attempted.add(url)
-        if not BrowserResolver.available():
-            self._log(
-                f"    challenge anti-bot ({reason}); Playwright no está instalado"
-            )
-            return None
-        self._log(f"    challenge anti-bot ({reason}); usando navegador headless...")
-        try:
-            outcome = BrowserResolver(
-                timeout=self.timeout,
-                max_wait=self.max_wait,
-                verbose=self.verbose,
-                user_agent=self.session.headers.get("User-Agent"),
-                cookies=self.session.cookies,
-                allow_private=self.allow_private,
-            ).resolve(url)
-        except Exception as exc:
-            self._log(f"    el navegador headless falló: {exc}")
-            return None
-
+    def _import_browser_cookies(self, outcome: BrowserOutcome) -> None:
         for cookie in outcome.cookies:
             try:
                 self.session.cookies.set(
@@ -582,11 +563,112 @@ class LinkResolver:
                 )
             except Exception:
                 continue
-        if outcome.final_url and outcome.final_url != url:
-            self._log(
-                f"    navegador resolvió el challenge -> {redact_url(outcome.final_url)}"
+
+    def _run_browser(
+        self,
+        url: str,
+        *,
+        reason: str,
+        actions: list[dict[str, object]] | None = None,
+        speed_up_timers: bool = False,
+        save: bool = False,
+        output: str | None = None,
+    ) -> BrowserOutcome | None:
+        """Ejecuta el navegador headless una sola vez por URL."""
+        if url in self._browser_attempted:
+            return None
+        self._browser_attempted.add(url)
+        if not BrowserResolver.available():
+            self._log(f"    {reason}; Playwright no está instalado")
+            return None
+        self._log(f"    {reason}; usando navegador headless...")
+        try:
+            outcome = BrowserResolver(
+                timeout=self.timeout,
+                max_wait=self.max_wait,
+                verbose=self.verbose,
+                user_agent=self.session.headers.get("User-Agent"),
+                cookies=self.session.cookies,
+                allow_private=self.allow_private,
+                max_sequence_seconds=self.max_wait,
+            ).resolve(
+                url,
+                actions=actions,
+                speed_up_timers=speed_up_timers,
+                save=save,
+                output=output,
+                force=True,
+                as_dir=True,
             )
-            return outcome.final_url
+        except Exception as exc:
+            self._log(f"    el navegador headless falló: {exc}")
+            return None
+        self._import_browser_cookies(outcome)
+        return outcome
+
+    def _browser_rescue(self, url: str, reason: str) -> str | None:
+        """Intenta superar un challenge anti-bot y devuelve la nueva URL."""
+        if not self.browser_fallback:
+            return None
+        outcome = self._run_browser(url, reason=reason)
+        if outcome is None:
+            return None
+        target = outcome.extracted_url or outcome.final_url
+        if target and target != url:
+            self._log(f"    navegador resolvió -> {redact_url(target)}")
+            return target
+        return None
+
+    def _browser_plan_attempt(
+        self,
+        url: str,
+        plan: list[dict[str, object]],
+        *,
+        reason: str = "flujo multi-click",
+    ) -> "Resolution | str | None":
+        """Ejecuta un plan de acciones y devuelve Resolution, URL o None."""
+        tempdir = Path(tempfile.mkdtemp(prefix="desenlace-browser-"))
+        outcome = self._run_browser(
+            url,
+            reason=reason,
+            actions=plan,
+            speed_up_timers=True,
+            save=True,
+            output=str(tempdir),
+        )
+        if outcome is None:
+            shutil.rmtree(tempdir, ignore_errors=True)
+            return None
+
+        if outcome.destination is not None:
+            filename = sanitize_filename(
+                outcome.filename or outcome.destination.name or "download.bin"
+            )
+            self._log(f"    descarga capturada por el navegador: {filename}")
+            return Resolution(
+                final_url=outcome.final_url or url,
+                filename=filename,
+                referer=url,
+                hops=1,
+                page_url=url,
+                prefetched=outcome.destination,
+            )
+
+        shutil.rmtree(tempdir, ignore_errors=True)
+        if outcome.timed_out:
+            self._log("    el flujo multi-click agotó el tiempo máximo")
+        target = outcome.extracted_url or outcome.download_url
+        if not target:
+            candidate = outcome.final_url
+            if candidate and candidate != url:
+                target = candidate
+        if (
+            target
+            and target.startswith(("http://", "https://"))
+            and not target.startswith("blob:")
+        ):
+            self._log(f"    el navegador obtuvo -> {redact_url(target)}")
+            return target
         return None
 
     def _prepare_start(self, url: str) -> str:
@@ -756,6 +838,38 @@ class LinkResolver:
                     )
 
                 if not looks_like_shortener(html, response_url):
+                    # Última oportunidad: páginas de descarga con varios clics
+                    # que no delatan su naturaleza con los marcadores habituales.
+                    if self.browser_fallback:
+                        candidate_plan = build_browser_plan(html, response_url)
+                        if candidate_plan:
+                            self._log("    plan multi-click detectado (página genérica)")
+                            response.close()
+                            outcome = self._browser_plan_attempt(
+                                response_url, candidate_plan
+                            )
+                            if isinstance(outcome, Resolution):
+                                return outcome
+                            if outcome:
+                                method, url, data, referer = (
+                                    "GET",
+                                    outcome,
+                                    None,
+                                    response_url,
+                                )
+                                continue
+                            self._log(
+                                "    el plan no obtuvo nada; se trata como página final"
+                            )
+                            return Resolution(
+                                final_url=response_url,
+                                filename=sanitize_filename(
+                                    filename_from_url(response_url) or "download.bin"
+                                ),
+                                referer=referer or response_url,
+                                hops=len(visit_counts),
+                                page_url=response_url,
+                            )
                     self._log("    página final detectada (sin más pasos de acortador)")
                     result = Resolution(
                         final_url=response_url,
@@ -769,6 +883,17 @@ class LinkResolver:
                     response.close()
                     return result
 
+                plan = build_browser_plan(html, response_url)
+                if plan and self.browser_fallback:
+                    self._log("    plan multi-click detectado")
+                    response.close()
+                    outcome = self._browser_plan_attempt(response_url, plan)
+                    if isinstance(outcome, Resolution):
+                        return outcome
+                    if outcome:
+                        method, url, data, referer = "GET", outcome, None, response_url
+                        continue
+
                 title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
                 title = title_match.group(1).strip() if title_match else "sin título"
                 response.close()
@@ -780,7 +905,8 @@ class LinkResolver:
                     continue
                 raise ResolveError(
                     f"No se reconoce la página en {redact_url(response_url)} "
-                    f"(título: {title!r})."
+                    f"(título: {title!r}). Si requiere varios clics, usa "
+                    "--auto-browser."
                 )
 
             response.close()
@@ -841,6 +967,53 @@ class LinkResolver:
                     )
                 self._log("    enlace final obtenido del contador")
                 method, url, data, referer = "GET", urljoin(response_url, str(next_url)), None, response_url
+            elif kind == "browser":
+                self._log("    el plugin solicita un flujo con navegador headless")
+                outcome = self._browser_plan_attempt(
+                    action.url or response_url,
+                    action.plan,
+                    reason="flujo de plugin (navegador)",
+                )
+                if isinstance(outcome, Resolution):
+                    return outcome
+                if outcome:
+                    method, url, data, referer = "GET", outcome, None, response_url
+                    continue
+                raise ResolveError(
+                    "El flujo con navegador no obtuvo ningún enlace en "
+                    f"{redact_url(response_url)}."
+                )
+            elif kind == "telegram_bot":
+                self._log("    resolviendo bot de Telegram...")
+                from telegram_client import resolve_bot_link
+
+                telegram = resolve_bot_link(
+                    action.url,
+                    timeout=max(30.0, self.max_wait),
+                    save=True,
+                )
+                if telegram.file_path is not None:
+                    return Resolution(
+                        final_url=telegram.message_url or action.url,
+                        filename=sanitize_filename(
+                            telegram.filename or telegram.file_path.name
+                        ),
+                        referer=response_url,
+                        hops=len(visit_counts),
+                        page_url=response_url,
+                        prefetched=telegram.file_path,
+                    )
+                if telegram.final_url:
+                    method, url, data, referer = (
+                        "GET",
+                        telegram.final_url,
+                        None,
+                        response_url,
+                    )
+                    continue
+                raise ResolveError(
+                    "Telegram no devolvió ni archivo ni enlace utilizable."
+                )
             elif kind == "mediafire":
                 self._log("    enlace directo de descarga detectado")
                 result = Resolution(
@@ -872,6 +1045,24 @@ class LinkResolver:
         Si se pasa ``progress``, se invoca con ``(descargado, total)`` en bytes
         (``total`` puede ser 0 si el servidor no envía ``content-length``).
         """
+        if target.prefetched is not None and target.prefetched.is_file():
+            filename = sanitize_filename(target.filename or target.prefetched.name)
+            destination = self._destination(
+                output, filename, as_dir=as_dir, force=force
+            )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.move(str(target.prefetched), str(destination))
+            except Exception:
+                release_destination(destination)
+                raise
+            release_destination(destination)
+            self._log(
+                f"    guardado {destination} "
+                f"({destination.stat().st_size} bytes, desde caché del navegador)"
+            )
+            return destination
+
         headers = {
             "Referer": target.referer or target.final_url,
             "Accept": "*/*",
@@ -1224,6 +1415,8 @@ def main(argv: list[str] | None = None) -> int:
                 capabilities.append("url")
             if plugin.normalize is not None:
                 capabilities.append("normalize")
+            if plugin.browser_plan is not None:
+                capabilities.append("plan")
             print(
                 f"{plugin.priority:>3}  {plugin.name:<22} "
                 f"[{'/'.join(capabilities) or 'catálogo'}] {hosts}"
@@ -1414,6 +1607,8 @@ def main(argv: list[str] | None = None) -> int:
             continue
         if args.info:
             print(job.resolution.final_url)
+            if job.resolution.prefetched is not None:
+                job.resolution.prefetched.unlink(missing_ok=True)
             continue
         if job.skipped:
             print(f"Omitido (ya existe): {job.destination} ({job.elapsed:.1f}s)")

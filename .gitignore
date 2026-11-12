@@ -11,6 +11,11 @@ venv/
 .desenlace_cache.json
 downloads/
 
+# Secretos (Telegram API_ID/HASH/sesión). El ejemplo sí se versiona.
+.env
+.env.local
+.env.*.local
+
 # Enlaces personales
 links.txt
 

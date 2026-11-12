@@ -15,6 +15,13 @@ Incluye una interfaz web local y una CLI.
 - **Anti-bot con navegador headless**: si aparece Cloudflare, Turnstile,
   reCAPTCHA, "Checking your browser" o "No soy un robot", se activa Playwright
   automáticamente (`--auto-browser`) para pulsar la verificación y continuar.
+- **Multi-Click Download Bypasser**: cuando una web de descarga exige varios
+  pasos (clic → espera → cerrar pop-up → descargar), el plugin
+  `multi-click-bypasser` genera una secuencia `CLICK/WAIT/CLOSE_POPUP/EXTRACT_URL`
+  que el navegador ejecuta con deadline estricto y aceleración de timers.
+- **Telegram Resolver**: canales públicos (`t.me/canal/123`) vía preview web con
+  Playwright y bots (`t.me/bot?start=...`) vía Telethon, con configuración por
+  variables de entorno y errores controlados si no está configurado.
 - Resuelve wrappers, `wp-safelink`, AdLinkFly y clones, `ouo`, `mediafire`,
   `meta refresh`, formularios automáticos y contadores, respetando los tiempos
   de espera.
@@ -49,6 +56,7 @@ Incluye una interfaz web local y una CLI.
 | Acortadores clásicos | `adf.ly` (`ysmm`), `shorte.st`, `bc.vc`, `adfoc.us`, `linkvertise` |
 | Redirectores | Google, Bing, DuckDuckGo, Yahoo, Facebook, Reddit, VK, Tumblr, LinkedIn |
 | Hosts de archivos | MediaFire, Google Drive/Docs, Dropbox, OneDrive, Pixeldrain, send.now |
+| Telegram | `t.me/canal/123`, `t.me/s/canal`, `t.me/bot?start=...` |
 
 El motor aplica primero los plugins con prioridad menor (redirectores y
 detectores específicos) y después heurísticas genéricas (formularios ocultos,
@@ -141,10 +149,83 @@ como capa secundaria automática y también reintenta desde cero si el flujo HTT
 falla. Si el reto exige interacción humana (p. ej. resolver un puzzle), no hay
 bypass automático: usa `--cookies` con una sesión válida (`cf_clearance`).
 
+## Multi-Click Download Bypasser
+
+Muchas webs de descarga no exponen el archivo hasta completar una secuencia.
+`plugins/download_bypasser.py` analiza el DOM y genera un plan:
+
+```json
+[
+  {"kind": "wait", "seconds": 1.5},
+  {"kind": "click", "selector": "#step1"},
+  {"kind": "close_popup"},
+  {"kind": "wait", "seconds": 1.0},
+  {"kind": "click", "text": "Descargar"},
+  {"kind": "extract_url"}
+]
+```
+
+`browser_resolver.py` soporta las acciones `CLICK`, `WAIT`, `CLOSE_POPUP` y
+`EXTRACT_URL`:
+
+- **CLICK**: selector CSS o texto visible; tras el clic se espera a la red.
+- **WAIT**: espera un selector o N segundos (siempre acotado por el deadline).
+- **CLOSE_POPUP**: cierra las pestañas publicitarias y devuelve el foco a la
+  original. Las descargas capturadas se guardan aparte.
+- **EXTRACT_URL**: prioriza `a[download]`, `data-*`, enlaces con "descargar" y,
+  si no hay enlace, envía el formulario POST. Devuelve la URL al motor HTTP.
+
+El plan sólo se ejecuta cuando el flujo HTTP no puede avanzar (acción no
+detectada y página de acortador/descarga), con `--auto-browser`. Además:
+
+- Se inyecta un script que acelera `setTimeout`, `setInterval` y `Date.now`
+  (los contadores de 10 s se resuelven en milisegundos).
+- Timeout estricto: `min(--max-wait, 120 s)` para toda la secuencia; una espera
+  que consuma el presupuesto corta el flujo (`timed_out`).
+- Si el navegador captura la descarga, se guarda en un temporal y
+  `LinkResolver.download()` la mueve al destino final (campo `prefetched`).
+
+## Telegram Resolver
+
+`plugins/telegram_resolver.py` clasifica los enlaces:
+
+- **Canal público** (`t.me/canal/123` o `t.me/s/canal`): abre
+  `https://t.me/s/canal/123` con Playwright y extrae documentos, vídeos, audio o
+  fotos del DOM (selectores `tgme_widget_message_*` y CDN de Telegram).
+- **Bot** (`t.me/MiBot?start=...`): usa `telegram_client.py` (Telethon) para
+  enviar `/start` y recibir el archivo o enlace.
+
+Configuración (copia `.env.example` a `.env` o expórtalo en el shell):
+
+```bash
+export TELEGRAM_API_ID=123456
+export TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef
+export TELEGRAM_SESSION_STRING='1BVtsOK...'
+```
+
+Las credenciales se obtienen en <https://my.telegram.org>. Para generar la
+sesión:
+
+```bash
+python - <<'PY'
+from telethon.sync import TelegramClient
+from telethon.sessions import StringSession
+api_id, api_hash = 123456, "TU_API_HASH"
+with TelegramClient(StringSession(), api_id, api_hash) as client:
+    print(client.session.save())
+PY
+```
+
+Sin `TELEGRAM_SESSION_STRING` (o sin Telethon instalado) el bot devuelve un
+`TelegramConfigError` controlado con instrucciones; no se intenta usar Telegram
+Web, que exige login interactivo. Los archivos se descargan a un temporal y se
+mueven al destino al llamar a `download()`.
+
 ## Requisitos
 
 - Python 3.10 o superior.
-- `requests`, `beautifulsoup4` y `playwright` (ver `requirements.txt`).
+- `requests`, `beautifulsoup4`, `playwright` y `telethon` (ver
+  `requirements.txt`).
 - Binario de Chromium: `python3 -m playwright install chromium`.
 - Para el selector de carpeta nativo: `tkinter` (viene con Python en Linux).
 
@@ -208,7 +289,11 @@ en los logs. No subas esos archivos al repositorio: `.gitignore` y el hook
 | --- | --- |
 | `desenlace_core.py` | Tipos, helpers, parsers y validación SSRF (sin dependencias del motor) |
 | `plugins/` | Estrategias por familia de acortadores (descubrimiento automático) |
-| `browser_resolver.py` | Capa anti-bot con Playwright |
+| `plugins/download_bypasser.py` | Genera planes multi-click desde el DOM |
+| `plugins/telegram_resolver.py` | Clasifica canales/bots y plan del preview |
+| `telegram_client.py` | Integración opcional con Telethon |
+| `browser_resolver.py` | Capa anti-bot y motor de secuencias con Playwright |
+| `.env.example` | Plantilla de `TELEGRAM_API_ID/HASH/SESSION_STRING` |
 | `desenlace.py` | Motor HTTP, descarga, caché, CLI y re-exports compatibles |
 | `desenlace_web.py` | Servidor local y API de la interfaz web |
 | `index.html` | Página de la interfaz (cuadro de enlaces y progreso) |
@@ -223,8 +308,9 @@ python3 -m unittest discover -s tests -v
 ```
 
 La suite incluye: fixtures HTML de cada familia, tests de plugins, SSRF
-(incluido redirect a `169.254.169.254`), límite de redirecciones y un test del
-navegador headless con Playwright simulado.
+(incluido redirect a `169.254.169.254`), límite de redirecciones, el flujo
+multi-click con popup + extracción de URL, timeout estricto y el resolver de
+canales de Telegram con Playwright simulado.
 
 ## Notas
 

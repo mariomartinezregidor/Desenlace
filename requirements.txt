@@ -1,5 +1,7 @@
 requests>=2.31.0
 beautifulsoup4>=4.12.0
-# Navegador headless para superar challenges anti-bot (Cloudflare/Turnstile).
+# Navegador headless para challenges anti-bot y flujos multi-click.
 # Después de instalarlo: playwright install chromium
 playwright>=1.40.0
+# Opcional: resolver enlaces de bots de Telegram (requiere API_ID/API_HASH).
+telethon>=1.36.0

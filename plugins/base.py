@@ -8,7 +8,7 @@ detección. El núcleo descubre e importa los módulos automáticamente.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 
 # Re-exportamos las primitivas que usan los plugins para que cada módulo sólo
 # necesite una línea de imports.
@@ -37,6 +37,7 @@ from desenlace_core import (  # noqa: F401
 Detect = Callable[[PageContext], "Action | None"]
 DetectUrl = Callable[[str, "tuple[str, ...]"], "Action | None"]
 Normalize = Callable[[str], str]
+BrowserPlan = Callable[[PageContext], "list[dict[str, Any]] | None"]
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,10 @@ class Plugin:
             resuelve redirecciones que viajan en la propia URL.
         normalize: función ``url -> url`` para convertir páginas de hosting
             en enlaces directos antes de hacer peticiones.
+        browser_plan: función ``(PageContext) -> list[dict] | None`` que
+            describe una secuencia de acciones para el navegador headless
+            (``CLICK``, ``WAIT``, ``CLOSE_POPUP``, ``EXTRACT_URL``). El motor
+            la usa sólo cuando el flujo HTTP no puede avanzar.
     """
 
     name: str
@@ -62,6 +67,7 @@ class Plugin:
     detect: Detect | None = None
     detect_url: DetectUrl | None = None
     normalize: Normalize | None = None
+    browser_plan: BrowserPlan | None = None
 
     def __post_init__(self) -> None:
         if not self.name:

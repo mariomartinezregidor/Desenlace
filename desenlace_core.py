@@ -232,6 +232,7 @@ class Action:
     delay: float = 0.0
     filename: str = ""
     action_url: str = ""
+    plan: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

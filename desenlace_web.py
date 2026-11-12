@@ -336,7 +336,13 @@ def _obtener_enlace_final(
             resolver=resolver,
         )
         return final_url
-    return resolver.resolve(url).final_url
+    resultado = resolver.resolve(url)
+    if resultado.prefetched is not None:
+        try:
+            resultado.prefetched.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return resultado.final_url
 
 
 def _resultado_ok(
@@ -390,7 +396,8 @@ def _procesar_enlace(
     opciones: dict[str, Any] | None = None,
 ) -> None:
     """Procesa un enlace, incluyendo el reintento opcional con navegador."""
-    opciones = opciones or {}
+    opciones = dict(opciones or {})
+    opciones.setdefault("browser_fallback", auto_browser)
     job.iniciar_enlace(indice, url)
     job.anadir_log(f"[{indice}/{total}] {redact_url(url)}")
     inicio = time.monotonic()
