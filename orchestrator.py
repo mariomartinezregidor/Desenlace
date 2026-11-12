@@ -60,6 +60,7 @@ class ProcessOptions:
     cookies: Any = None
     allow_private: bool = False
     cache: ResolutionCache | None = None
+    max_size: int | None = None
 
 
 @dataclass
@@ -100,6 +101,7 @@ def build_resolver(
         logger=hooks.log,
         trace=trace,
         browser_timeout=options.browser_timeout,
+        max_size=options.max_size,
     )
 
 
@@ -165,6 +167,20 @@ def process_url(
             destination = resolver.download(
                 result, options.output, force=options.force, as_dir=options.as_dir,
                 progress=progress,
+                max_size=options.max_size,
+            )
+        if (
+            destination is not None
+            and options.max_size is not None
+            and destination.is_file()
+            and destination.stat().st_size > options.max_size
+        ):
+            try:
+                destination.unlink()
+            except OSError:
+                pass
+            raise ResolveError(
+                f"El archivo supera el tamaño máximo permitido ({options.max_size} bytes)."
             )
         return result, destination, False
 
@@ -178,12 +194,31 @@ def process_url(
         if options.skip_existing and not options.force:
             candidate = base_destination(options.output, result.filename, options.as_dir)
             if candidate.is_file() and candidate.stat().st_size > 0:
+                if options.max_size is not None and candidate.stat().st_size > options.max_size:
+                    raise ResolveError(
+                        f"El archivo existente supera el tamaño máximo "
+                        f"permitido ({options.max_size} bytes)."
+                    )
                 discard_temp_file(result.prefetched)
                 return result, candidate, True
         destination = resolver.download(
             result, options.output, force=options.force, as_dir=options.as_dir,
             progress=progress,
+            max_size=options.max_size,
         )
+        if (
+            destination is not None
+            and options.max_size is not None
+            and destination.is_file()
+            and destination.stat().st_size > options.max_size
+        ):
+            try:
+                destination.unlink()
+            except OSError:
+                pass
+            raise ResolveError(
+                f"El archivo supera el tamaño máximo permitido ({options.max_size} bytes)."
+            )
         return result, destination, False
 
     def attempt(use_browser: bool) -> tuple[Resolution, Path | None, bool]:

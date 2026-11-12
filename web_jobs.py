@@ -237,6 +237,7 @@ def _opciones_web(
         max_redirects=extra.get("max_redirects", DEFAULT_MAX_REDIRECTS),
         allow_private=extra.get("allow_private", False),
         browser_timeout=extra.get("browser_timeout", 120.0),
+        max_size=extra.get("max_size"),
     )
 
 def _procesar_enlace(

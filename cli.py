@@ -96,6 +96,49 @@ def parse_extra_headers(items: list[str] | None) -> dict[str, str]:
     return headers
 
 
+def get_version() -> str:
+    """Obtiene la versión instalada, con respaldo al pyproject.toml del repo."""
+    try:
+        from importlib.metadata import version as _version
+
+        return _version("desenlace")
+    except Exception:
+        pass
+    try:
+        import tomllib
+
+        with (Path(__file__).resolve().parent / "pyproject.toml").open("rb") as handle:
+            return tomllib.load(handle)["project"]["version"]
+    except Exception:
+        return "0.0.0"
+
+
+def parse_size(value: str) -> int:
+    """Convierte '100', '100MB', '1.5GB' en bytes."""
+    import re
+
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]*)\s*", value or "")
+    if not match:
+        raise argparse.ArgumentTypeError(f"Tamaño no válido: {value!r}")
+    number = float(match.group(1))
+    unit = (match.group(2) or "b").lower()
+    factors = {
+        "": 1,
+        "b": 1,
+        "k": 1024,
+        "kb": 1024,
+        "m": 1024 ** 2,
+        "mb": 1024 ** 2,
+        "g": 1024 ** 3,
+        "gb": 1024 ** 3,
+        "t": 1024 ** 4,
+        "tb": 1024 ** 4,
+    }
+    if unit not in factors:
+        raise argparse.ArgumentTypeError(f"Unidad no reconocida: {unit!r}")
+    return int(number * factors[unit])
+
+
 def build_parser() -> argparse.ArgumentParser:
     settings_hint = " (por defecto: DESENLACE_MAX_REDIRECTS o 10)"
     parser = argparse.ArgumentParser(
@@ -192,6 +235,13 @@ def build_parser() -> argparse.ArgumentParser:
         "-H", "--header", action="append", default=[], metavar="CABECERA",
         help="Cabecera HTTP extra, por ejemplo 'Accept-Language: es'. Se puede repetir.",
     )
+    parser.add_argument(
+        "--version", action="version", version=f"desenlace {get_version()}"
+    )
+    parser.add_argument(
+        "--max-size", type=parse_size, default=None, metavar="TAMAÑO",
+        help="Tamaño máximo del archivo a descargar (ej. 100MB). Aborta si se supera.",
+    )
     return parser
 
 
@@ -247,6 +297,7 @@ def _options_for(
         cookies=cookies,
         allow_private=args.allow_private,
         cache=cache,
+        max_size=getattr(args, 'max_size', None),
     )
 
 

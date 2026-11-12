@@ -238,10 +238,12 @@ class LinkResolver:
         logger: LogFunction | None = None,
         trace: list[dict[str, Any]] | None = None,
         browser_timeout: float = 120.0,
+        max_size: int | None = None,
     ) -> None:
         self.logger: LogFunction = logger or _default_log(log_lock)
         self.trace: list[dict[str, Any]] = trace if trace is not None else []
         self.browser_timeout = max(5.0, float(browser_timeout))
+        self.max_size = max_size
         self.timeout = timeout
         self.max_wait = max_wait
         self.max_hops = max_hops
@@ -858,6 +860,7 @@ class LinkResolver:
         force: bool = False,
         as_dir: bool = True,
         progress: Callable[[int, int], None] | None = None,
+        max_size: int | None = None,
     ) -> Path:
         """Descarga el archivo final (la lógica vive en downloader.py)."""
         return download_resolution(
@@ -871,6 +874,7 @@ class LinkResolver:
             log=self._log,
             max_redirects=self.max_redirects,
             resume_retries=self.retries,
+            max_size=max_size if max_size is not None else self.max_size,
         )
 
 

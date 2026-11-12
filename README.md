@@ -194,10 +194,12 @@ https://ejemplo.com/enlace-2
 | `--timeout SEGUNDOS` | Tiempo máximo por petición. |
 | `--max-wait SEGUNDOS` | Tiempo máximo de espera de una página. |
 | `--retries N` | Reintentos ante errores de conexión. |
+| `--max-size TAMAÑO` | Tamaño máximo del archivo a descargar (ej. `100MB`). Aborta si se supera. |
 | `--refresh` | Ignora la memoria de enlaces ya resueltos. |
 | `--no-cache` | No usa ni guarda esa memoria. |
 | `-v` | Muestra más detalles del proceso. |
 | `--help` | Lista todas las opciones. |
+| `--version` | Muestra la versión instalada. |
 
 Si una página no se resuelve, prueba primero con `--auto-browser`.
 

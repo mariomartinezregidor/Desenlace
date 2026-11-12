@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -145,6 +146,29 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "Trabajo no encontrado"}, 404)
                 return
             self._json(job.instantanea())
+            return
+        if ruta == "/api/eventos":
+            job = self._trabajo_de_query()
+            if job is None:
+                self._json({"error": "Trabajo no encontrado"}, 404)
+                return
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("X-Accel-Buffering", "no")
+                self.end_headers()
+                while True:
+                    datos = job.instantanea()
+                    cuerpo = ("data: " + json.dumps(datos, ensure_ascii=False) + "\n\n").encode("utf-8")
+                    self.wfile.write(cuerpo)
+                    self.wfile.flush()
+                    if datos.get("estado") != "en_curso":
+                        break
+                    time.sleep(0.5)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
             return
         self._json({"error": "Ruta no encontrada"}, 404)
 

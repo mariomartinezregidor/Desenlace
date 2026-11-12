@@ -9,6 +9,8 @@ servidor dio un validador (``ETag`` o ``Last-Modified``) y se envía como
 
 from __future__ import annotations
 
+import hashlib
+
 import json
 import re
 import shutil
@@ -122,6 +124,18 @@ def _expected_total(response: requests.Response, offset: int) -> int:
     return length
 
 
+
+def _sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for bloque in iter(lambda: handle.read(65536), b""):
+                hasher.update(bloque)
+    except OSError:
+        return ""
+    return hasher.hexdigest()
+
+
 def download_resolution(
     session: requests.Session,
     target: Resolution,
@@ -134,6 +148,7 @@ def download_resolution(
     log: LogCallback = lambda message: None,
     max_redirects: int = 10,
     resume_retries: int = 2,
+    max_size: int | None = None,
 ) -> Path:
     """Descarga el archivo de ``target`` en ``output``.
 
@@ -157,8 +172,17 @@ def download_resolution(
     if not force and part_resume.is_file() and not resumable_base.exists():
         meta = _read_meta(meta_resume)
         if meta.get("url") == target.final_url and meta.get("validator"):
-            offset = part_resume.stat().st_size
-            validator = str(meta["validator"])
+            stored_hash = meta.get("sha256")
+            actual_hash = _sha256_file(part_resume) if stored_hash else None
+            if stored_hash and actual_hash != stored_hash:
+                # El .part no coincide con lo descargado: reinicia limpio.
+                part_resume.unlink(missing_ok=True)
+                meta_resume.unlink(missing_ok=True)
+                offset = 0
+                validator = None
+            else:
+                offset = part_resume.stat().st_size
+                validator = str(meta["validator"])
         else:
             validator = None
     else:
@@ -223,21 +247,47 @@ def download_resolution(
         part = _part_path(destination)
         meta_path = _meta_path(destination)
         total = _expected_total(response, offset)
+        if max_size is not None and total and total > max_size:
+            raise ResolveError(
+                f"El archivo ({total} bytes) supera el tamaño máximo "
+                f"permitido ({max_size} bytes)."
+            )
         _write_meta(
             meta_path,
             {
                 "url": target.final_url,
                 "validator": _validator(response),
                 "total": total,
+                "sha256": _sha256_file(part) if offset > 0 and part.exists() else hashlib.sha256(b"").hexdigest(),
             },
         )
         if offset == 0:
             part.unlink(missing_ok=True)
+            _write_meta(
+                meta_path,
+                {
+                    "url": target.final_url,
+                    "validator": _validator(response),
+                    "total": total,
+                    "sha256": hashlib.sha256(b"").hexdigest(),
+                },
+            )
         _stream_to_part(
             session, response, part, offset=offset, total=total,
             progress=progress, log=log, referer=referer, timeout=timeout,
             target_url=target.final_url, validator=_validator(response),
             resume_retries=resume_retries, meta_path=meta_path,
+            max_size=max_size,
+        )
+        # Hash final exacto del fichero completo.
+        _write_meta(
+            meta_path,
+            {
+                "url": target.final_url,
+                "validator": _validator(response),
+                "total": total,
+                "sha256": _sha256_file(part),
+            },
         )
         part.replace(destination)
         meta_path.unlink(missing_ok=True)
@@ -267,6 +317,7 @@ def _stream_to_part(
     validator: str | None,
     resume_retries: int,
     meta_path: Path,
+    max_size: int | None = None,
 ) -> None:
     """Escribe el cuerpo en ``part``; si se corta, reanuda con Range."""
     mode = "ab" if offset > 0 else "wb"
@@ -275,6 +326,12 @@ def _stream_to_part(
     retries_left = max(0, resume_retries)
     attempt = 0
     last_print = 0.0
+    last_meta_flush = offset
+    hasher = hashlib.sha256()
+    if offset > 0 and part.exists():
+        with part.open("rb") as handle:
+            for bloque in iter(lambda: handle.read(65536), b""):
+                hasher.update(bloque)
     while True:
         try:
             if progress is not None:
@@ -284,7 +341,14 @@ def _stream_to_part(
                     if not chunk:
                         continue
                     handle.write(chunk)
+                    handle.flush()
+                    hasher.update(chunk)
                     offset += len(chunk)
+                    if max_size is not None and offset > max_size:
+                        raise ResolveError(
+                            f"El archivo supera el tamaño máximo permitido "
+                            f"({max_size} bytes)."
+                        )
                     if progress is not None:
                         progress(offset, total)
                     now = time.monotonic()
@@ -297,6 +361,17 @@ def _stream_to_part(
                             file=sys.stderr,
                             flush=True,
                         )
+                    if offset - last_meta_flush >= 1024 * 1024:
+                        last_meta_flush = offset
+                        _write_meta(
+                            meta_path,
+                            {
+                                "url": target_url,
+                                "validator": validator,
+                                "total": total,
+                                "sha256": hasher.hexdigest(),
+                            },
+                        )
             if sys.stderr.isatty() and total:
                 print(file=sys.stderr)
             size = part.stat().st_size
@@ -305,9 +380,27 @@ def _stream_to_part(
                     f"descarga incompleta ({size}/{total} bytes)"
                 )
             return
+        except ResolveError as exc:
+            if "tamaño máximo" in str(exc):
+                part.unlink(missing_ok=True)
+                meta_path.unlink(missing_ok=True)
+            raise
         except requests.RequestException as exc:
             response.close()
             offset = part.stat().st_size if part.exists() else 0
+            # Guarda el progreso y su hash para poder reanudar con integridad.
+            try:
+                _write_meta(
+                    meta_path,
+                    {
+                        "url": target_url,
+                        "validator": validator,
+                        "total": total,
+                        "sha256": hasher.hexdigest() if "hasher" in locals() else _sha256_file(part),
+                    },
+                )
+            except Exception:
+                pass
             if retries_left <= 0:
                 raise ResolveError(
                     f"La descarga se interrumpió ({exc}). Se han conservado "
@@ -340,12 +433,33 @@ def _stream_to_part(
                 offset = 0
                 mode = "wb"
                 total = _expected_total(response, 0) or total
+                hasher = hashlib.sha256()
+                last_meta_flush = 0
             else:
                 offset = real_offset
                 mode = "ab"
+                hasher = hashlib.sha256()
+                if part.exists():
+                    with part.open("rb") as handle:
+                        for bloque in iter(lambda: handle.read(65536), b""):
+                            hasher.update(bloque)
+                last_meta_flush = offset
+            offset = part.stat().st_size if part.exists() else 0
+            # Recalcular el hash del progreso conservado.
+            hasher = hashlib.sha256()
+            if part.exists():
+                with part.open("rb") as handle:
+                    for bloque in iter(lambda: handle.read(65536), b""):
+                        hasher.update(bloque)
+            last_meta_flush = offset
             _write_meta(
                 meta_path,
-                {"url": target_url, "validator": validator, "total": total},
+                {
+                    "url": target_url,
+                    "validator": validator,
+                    "total": total,
+                    "sha256": hasher.hexdigest(),
+                },
             )
 
 

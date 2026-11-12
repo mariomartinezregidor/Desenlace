@@ -15,6 +15,17 @@
     --ok: #37c871;
     --error: #ff6b6b;
   }
+  [data-theme="light"] {
+    --fondo: #f4f6fa;
+    --panel: #ffffff;
+    --borde: #d6dbe6;
+    --texto: #1a1d26;
+    --suave: #5b6477;
+    --acento: #2f6feb;
+    --ok: #1f9d55;
+    --error: #d6336c;
+  }
+  html { color-scheme: dark light; }
   * { box-sizing: border-box; }
   body {
     margin: 0;
@@ -129,12 +140,29 @@
   .oculto { display: none; }
   .atenuado { opacity: .45; }
   #resultadosTexto { min-height: 140px; }
+  .cabecera { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .tema { background: transparent; border: 1px solid var(--borde); border-radius: 999px; width: 40px; height: 40px; padding: 0; font-size: 1.1rem; }
+  @media (max-width: 640px) {
+    body { padding: 16px 10px; }
+    .panel { padding: 14px; }
+    .fila { flex-direction: column; align-items: stretch; }
+    .fila button { width: 100%; }
+    .opciones label { display: block; margin: 6px 0 0; }
+    .meta { flex-direction: column; gap: 4px; }
+    h1 { font-size: 1.2rem; }
+  }
 </style>
+<script>document.documentElement.setAttribute("data-theme", localStorage.getItem("desenlace-tema") || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"));</script>
 </head>
 <body>
 <main>
-  <h1>Desenlace</h1>
-  <p class="sub">Pega los enlaces, elige la carpeta del PC y pulsa Descargar.</p>
+  <div class="cabecera">
+    <div>
+      <h1>Desenlace</h1>
+      <p class="sub">Pega los enlaces, elige la carpeta del PC y pulsa Descargar.</p>
+    </div>
+    <button id="btnTema" type="button" class="tema" aria-label="Cambiar tema">🌙</button>
+  </div>
 
   <section class="panel">
     <label for="enlaces">Enlaces (uno por línea)</label>
@@ -219,6 +247,18 @@ function aviso(mensaje, tipo) {
   caja.style.color = tipo === "error" ? "var(--error)" : "var(--suave)";
 }
 
+function actualizarIconoTema() {
+  $("btnTema").textContent = document.documentElement.getAttribute("data-theme") === "dark" ? "🌙" : "☀️";
+}
+actualizarIconoTema();
+$("btnTema").addEventListener("click", () => {
+  const actual = document.documentElement.getAttribute("data-theme");
+  const nuevo = actual === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", nuevo);
+  localStorage.setItem("desenlace-tema", nuevo);
+  actualizarIconoTema();
+});
+
 $("btnCarpeta").addEventListener("click", async () => {
   $("btnCarpeta").disabled = true;
   try {
@@ -269,7 +309,7 @@ $("btnDescargar").addEventListener("click", async () => {
       return;
     }
     jobId = datos.id;
-    temporizador = setInterval(consultarEstado, 500);
+    iniciarEventos();
   } catch (e) {
     $("textoEstado").textContent = "Error";
     aviso("No se pudo conectar con el servidor local.", "error");
@@ -287,7 +327,20 @@ $("btnCancelar").addEventListener("click", async () => {
   $("textoEstado").textContent = "Cancelando…";
 });
 
-async function consultarEstado() {
+let fuenteEventos = null;
+function iniciarEventos() {
+  if (fuenteEventos) { fuenteEventos.close(); fuenteEventos = null; }
+  fuenteEventos = new EventSource(`/api/eventos?id=${encodeURIComponent(jobId)}`);
+  fuenteEventos.onmessage = (ev) => {
+    try { procesarEstado(JSON.parse(ev.data)); } catch (e) { /* ignorar */ }
+  };
+  fuenteEventos.onerror = () => {
+    // Reintento suave: cerrar y volver a conectar si sigue en curso.
+    if (fuenteEventos) { fuenteEventos.close(); fuenteEventos = null; }
+  };
+}
+
+function procesarEstado(datos) {
   if (!jobId) return;
   let datos;
   try {
@@ -318,8 +371,7 @@ async function consultarEstado() {
   $("log").scrollTop = $("log").scrollHeight;
 
   if (terminado) {
-    clearInterval(temporizador);
-    temporizador = null;
+    if (fuenteEventos) { fuenteEventos.close(); fuenteEventos = null; }
     $("barraGlobal").classList.remove("indeterminada");
     $("barraArchivo").classList.remove("indeterminada");
     $("btnDescargar").disabled = false;
