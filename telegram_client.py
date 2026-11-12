@@ -1,30 +1,29 @@
 """Cliente opcional de Telethon para resolver enlaces de bots de Telegram.
 
-Configuración por entorno (nunca se registran los valores):
+Las credenciales se leen con :mod:`config` (llavero del sistema primero, luego
+entorno y finalmente ``.env``). Nunca se imprimen sus valores.
 
-    TELEGRAM_API_ID=<TU_API_ID_AQUI>
-    TELEGRAM_API_HASH=<TU_API_HASH_AQUI>
-    TELEGRAM_SESSION_STRING=<TU_SESSION_STRING_AQUI>
-
-Sin esas variables se lanza :class:`TelegramConfigError`, un ``ResolveError``
-controlado que el motor muestra al usuario con instrucciones.
+Si faltan credenciales o la dependencia no está instalada se lanza
+:class:`TelegramConfigError`, un ``ResolveError`` controlado con instrucciones.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
 import re
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+import config
 from desenlace_core import ResolveError, host_matches, normalized_host, sanitize_filename
 
 TELEGRAM_HOSTS = ("t.me", "telegram.me", "telegram.dog", "tx.me")
 URL_RE = re.compile(r"https?://[^\s\"'<>]+")
+TEMP_PREFIX = "desenlace-telegram-"
 
 
 class TelegramConfigError(ResolveError):
@@ -40,32 +39,29 @@ class TelegramResult:
     message_text: str = ""
 
 
-def _load_dotenv(path: str | Path | None = None) -> None:
-    """Carga un .env sencillo sin dependencias externas (no sobreescribe)."""
-    env_path = Path(path or os.environ.get("DESENLACE_ENV") or Path(__file__).parent / ".env")
-    if not env_path.is_file():
-        return
-    try:
-        lines = env_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip("'\"")
-        if key and key not in os.environ:
-            os.environ[key] = value
-
-
 def telegram_configured() -> bool:
-    _load_dotenv()
-    return bool(
-        os.environ.get("TELEGRAM_API_ID")
-        and os.environ.get("TELEGRAM_API_HASH")
-        and os.environ.get("TELEGRAM_SESSION_STRING")
+    return all(config.get_secret(name) for name in config.SECRET_NAMES)
+
+
+def telegram_credentials() -> tuple[int, str, str]:
+    """Devuelve (api_id, api_hash, session) o lanza TelegramConfigError."""
+    missing = [name for name in config.SECRET_NAMES if not config.get_secret(name)]
+    if missing:
+        raise TelegramConfigError(
+            "Telegram no está configurado. Faltan: "
+            + ", ".join(missing)
+            + ". Ejecuta `python3 desenlace.py setup` para guardarlos en el "
+            "llavero del sistema, o rellena el archivo .env (ver .env.example)."
+        )
+    api_id_text = config.get_secret("TELEGRAM_API_ID") or ""
+    try:
+        api_id = int(api_id_text)
+    except ValueError as exc:
+        raise TelegramConfigError("TELEGRAM_API_ID debe ser un número.") from exc
+    return (
+        api_id,
+        config.get_secret("TELEGRAM_API_HASH") or "",
+        config.get_secret("TELEGRAM_SESSION_STRING") or "",
     )
 
 
@@ -103,14 +99,7 @@ def _extract_url_from_message(message: Any) -> str | None:
     return None
 
 
-async def _run_bot(
-    bot: str,
-    command: str,
-    *,
-    timeout: float,
-    save: bool,
-    output_dir: str | None,
-) -> TelegramResult:
+async def _run_bot(bot: str, command: str, *, timeout: float, save: bool) -> TelegramResult:
     try:
         from telethon import TelegramClient, events
         from telethon.sessions import StringSession
@@ -119,19 +108,7 @@ async def _run_bot(
             "Telethon no está instalado. Ejecuta: pip install telethon"
         ) from exc
 
-    api_id_text = os.environ.get("TELEGRAM_API_ID", "")
-    api_hash = os.environ.get("TELEGRAM_API_HASH", "")
-    session_string = os.environ.get("TELEGRAM_SESSION_STRING", "")
-    if not (api_id_text and api_hash and session_string):
-        raise TelegramConfigError(
-            "Telegram no está configurado. Define TELEGRAM_API_ID, "
-            "TELEGRAM_API_HASH y TELEGRAM_SESSION_STRING (ver .env.example)."
-        )
-    try:
-        api_id = int(api_id_text)
-    except ValueError as exc:
-        raise TelegramConfigError("TELEGRAM_API_ID debe ser un número.") from exc
-
+    api_id, api_hash, session_string = telegram_credentials()
     client = TelegramClient(StringSession(session_string), api_id, api_hash)
     received: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
 
@@ -139,64 +116,61 @@ async def _run_bot(
         if not received.done():
             received.set_result(event.message)
 
+    temp_dir: Path | None = None
     try:
         await client.connect()
         if not await client.is_user_authorized():
             raise TelegramConfigError(
-                "La TELEGRAM_SESSION_STRING no está autorizada. Genera una nueva "
-                "sesión con Telethon."
+                "La sesión de Telegram no está autorizada. Vuelve a generarla "
+                "con `python3 desenlace.py setup`."
             )
         try:
             entity = await client.get_entity(bot)
         except Exception as exc:
-            raise TelegramConfigError(
-                f"No se pudo abrir el bot @{bot}: {exc}"
-            ) from exc
+            raise TelegramConfigError(f"No se pudo abrir el bot @{bot}.") from exc
 
         client.add_event_handler(on_new_message, events.NewMessage(chats=entity))
         await client.send_message(entity, command)
         try:
             message = await asyncio.wait_for(received, timeout=timeout)
         except asyncio.TimeoutError as exc:
-            raise ResolveError(
-                f"El bot @{bot} no respondió en {timeout:.0f}s."
-            ) from exc
+            raise ResolveError(f"El bot @{bot} no respondió en {timeout:.0f}s.") from exc
 
-        message_url = f"https://t.me/{bot}/{getattr(message, 'id', '')}".rstrip("/")
+        message_id = getattr(message, "id", "")
+        message_url = f"https://t.me/{bot}/{message_id}".rstrip("/")
+        message_text = getattr(message, "message", "") or ""
         media = getattr(message, "file", None)
         if media is not None:
             filename = sanitize_filename(
-                getattr(media, "name", None) or f"telegram_{getattr(message, 'id', '0')}"
+                getattr(media, "name", None) or f"telegram_{message_id or '0'}"
             )
             result = TelegramResult(
-                filename=filename,
-                message_url=message_url,
-                message_text=getattr(message, "message", "") or "",
+                filename=filename, message_url=message_url, message_text=message_text
             )
             if save:
-                directory = Path(
-                    output_dir
-                    or tempfile.mkdtemp(prefix="desenlace-telegram-")
-                ).expanduser()
-                directory.mkdir(parents=True, exist_ok=True)
+                # Directorio propio por descarga: se borra entero si algo falla
+                # o si el archivo termina en otro sitio.
+                temp_dir = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX))
                 downloaded = await client.download_media(
-                    message, file=str(directory / filename)
+                    message, file=str(temp_dir / filename)
                 )
-                if downloaded:
-                    result.file_path = Path(downloaded)
+                if not downloaded:
+                    raise ResolveError("Telegram no devolvió el contenido del archivo.")
+                result.file_path = Path(downloaded)
             return result
 
         target = _extract_url_from_message(message)
         if target:
             return TelegramResult(
-                final_url=target,
-                message_url=message_url,
-                message_text=getattr(message, "message", "") or "",
+                final_url=target, message_url=message_url, message_text=message_text
             )
         raise ResolveError(
-            f"El bot @{bot} respondió sin archivo ni enlace: "
-            f"{(getattr(message, 'message', '') or '')[:200]!r}"
+            f"El bot @{bot} respondió sin archivo ni enlace: {message_text[:200]!r}"
         )
+    except BaseException:
+        if temp_dir is not None:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
     finally:
         try:
             await client.disconnect()
@@ -204,27 +178,24 @@ async def _run_bot(
             pass
 
 
-def resolve_bot_link(
-    url: str,
-    *,
-    timeout: float = 60.0,
-    save: bool = True,
-    output_dir: str | None = None,
-) -> TelegramResult:
+def resolve_bot_link(url: str, *, timeout: float = 60.0, save: bool = True) -> TelegramResult:
     """Envía /start al bot y devuelve el archivo descargado o el enlace."""
-    if not telegram_configured():
-        raise TelegramConfigError(
-            "Telegram no está configurado. Define TELEGRAM_API_ID, "
-            "TELEGRAM_API_HASH y TELEGRAM_SESSION_STRING en el entorno "
-            "(ver .env.example)."
-        )
     bot, command = parse_bot_link(url)
+    if not telegram_configured():
+        # Mismo mensaje controlado que en telegram_credentials().
+        telegram_credentials()
     return asyncio.run(
-        _run_bot(
-            bot,
-            command,
-            timeout=max(5.0, timeout),
-            save=save,
-            output_dir=output_dir,
-        )
+        _run_bot(bot, command, timeout=max(5.0, timeout), save=save)
     )
+
+
+def discard_temp_file(path: Path | None) -> None:
+    """Elimina un archivo temporal de Telegram y su carpeta si la creamos nosotros."""
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+        if path.parent.name.startswith(TEMP_PREFIX):
+            shutil.rmtree(path.parent, ignore_errors=True)
+    except OSError:
+        pass

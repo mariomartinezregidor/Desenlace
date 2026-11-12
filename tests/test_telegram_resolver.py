@@ -11,7 +11,6 @@ sys.path.insert(0, str(ROOT))
 
 from browser_resolver import BrowserResolver  # noqa: E402
 from plugins import telegram_resolver as tg  # noqa: E402
-import telegram_client  # noqa: E402
 from telegram_client import (  # noqa: E402
     TelegramConfigError,
     parse_bot_link,
@@ -174,7 +173,9 @@ class TelegramPluginTests(unittest.TestCase):
 
     def test_bot_without_credentials_raises_controlled_error(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            with mock.patch.object(telegram_client, "_load_dotenv", lambda: None):
+            with mock.patch("config.load_dotenv", return_value={}), mock.patch(
+                "config._keyring_get", return_value=None
+            ):
                 with self.assertRaises(TelegramConfigError):
                     resolve_bot_link("https://t.me/MiBot?start=abc")
 
@@ -185,7 +186,9 @@ class TelegramPluginTests(unittest.TestCase):
         )
         self.assertEqual(parse_bot_link("https://t.me/MiBot"), ("MiBot", "/start"))
 
-    def test_load_dotenv(self):
+    def test_secrets_from_dotenv_fallback(self):
+        import config
+
         with tempfile.NamedTemporaryFile(
             "w", suffix=".env", delete=False, encoding="utf-8"
         ) as handle:
@@ -195,15 +198,15 @@ class TelegramPluginTests(unittest.TestCase):
             )
             path = Path(handle.name)
         try:
-            with mock.patch.dict(os.environ, {}, clear=True):
-                telegram_client._load_dotenv(path)
-                self.assertEqual(os.environ["TELEGRAM_API_ID"], "123")
-                self.assertEqual(os.environ["TELEGRAM_API_HASH"], "abcdef")
-                self.assertEqual(os.environ["TELEGRAM_SESSION_STRING"], "xyz")
-                self.assertTrue(telegram_client.telegram_configured())
+            values = config.load_dotenv(path)
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch(
+                "config._keyring_get", return_value=None
+            ):
+                self.assertEqual(config.get_secret("TELEGRAM_API_ID", dotenv=values), "123")
+                self.assertEqual(config.get_secret("TELEGRAM_API_HASH", dotenv=values), "abcdef")
+                self.assertEqual(config.secret_source("TELEGRAM_SESSION_STRING", dotenv=values), ".env")
         finally:
             path.unlink(missing_ok=True)
-
 
 if __name__ == "__main__":
     unittest.main()

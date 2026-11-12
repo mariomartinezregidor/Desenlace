@@ -121,7 +121,7 @@ class RedirectLimitTests(unittest.TestCase):
             retries=0,
             allow_private=True,
         )
-        with mock.patch("desenlace.validate_url", side_effect=recorder):
+        with mock.patch("safe_http.validate_url", side_effect=recorder):
             with redirect_stderr(io.StringIO()):
                 result = resolver.resolve(f"{self.base}/once")
         self.assertTrue(result.final_url.endswith("/file"))
@@ -148,33 +148,86 @@ class _PublicRedirectToPrivate(BaseHTTPRequestHandler):
 
 
 class RedirectSSRFTests(unittest.TestCase):
-    def test_redirect_to_metadata_endpoint_is_blocked(self):
+    def test_redirect_to_metadata_endpoint_is_blocked_even_with_allow_private(self):
+        # Un host local (permitido por --allow-private) redirige a metadatos de
+        # nube. Los metadatos deben bloquearse SIEMPRE.
         server = ThreadingHTTPServer(("127.0.0.1", 0), _PublicRedirectToPrivate)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         host, port = server.server_address[:2]
-        resolver = LinkResolver(
-            timeout=5,
-            max_wait=5,
-            retries=0,
-            allow_private=True,
-        )
-        original = __import__("desenlace").validate_url
-
-        def selective(url, *, allow_private=False):
-            if "169.254.169.254" in url:
-                original(url, allow_private=False)
-            return None
-
+        resolver = LinkResolver(timeout=5, max_wait=5, retries=0, allow_private=True)
         try:
-            with mock.patch("desenlace.validate_url", side_effect=selective):
-                with redirect_stderr(io.StringIO()):
-                    with self.assertRaises(UnsafeUrlError):
-                        resolver.resolve(f"http://{host}:{port}/")
+            with redirect_stderr(io.StringIO()):
+                with self.assertRaises(UnsafeUrlError):
+                    resolver.resolve(f"http://{host}:{port}/")
         finally:
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+
+class DnsRebindingTests(unittest.TestCase):
+    """La conexión debe usar la IP validada en ese instante, no una nueva."""
+
+    def setUp(self):
+        from desenlace_core import _DNS_CACHE, _DNS_LOCK
+
+        with _DNS_LOCK:
+            _DNS_CACHE.clear()
+
+    def test_second_lookup_to_loopback_is_never_connected(self):
+        from safe_http import SafeSession
+
+        # Primera consulta (validación): IP pública. Segunda (conexión): loopback.
+        answers = [
+            [(2, 1, 6, "", ("93.184.216.34", 80))],
+            [(2, 1, 6, "", ("127.0.0.1", 80))],
+            [(2, 1, 6, "", ("127.0.0.1", 80))],
+        ]
+        connected: list[tuple] = []
+
+        def fake_getaddrinfo(host, port, *args, **kwargs):
+            return answers.pop(0) if len(answers) > 1 else answers[0]
+
+        def fake_create_connection(address, *args, **kwargs):
+            connected.append(address)
+            raise OSError("bloqueado en el test")
+
+        session = SafeSession(allow_private=False)
+        with mock.patch("socket.getaddrinfo", side_effect=fake_getaddrinfo):
+            with mock.patch("safe_http.socket.create_connection", side_effect=fake_create_connection):
+                with self.assertRaises(Exception):
+                    session.get("http://rebind-test.invalid/", timeout=2)
+
+        self.assertFalse(
+            any(address[0] == "127.0.0.1" for address in connected),
+            f"se intentó conectar a loopback: {connected}",
+        )
+
+    def test_connection_goes_to_validated_public_address(self):
+        from safe_http import SafeSession
+
+        connected: list[tuple] = []
+
+        def fake_getaddrinfo(host, port, *args, **kwargs):
+            return [(2, 1, 6, "", ("93.184.216.34", port))]
+
+        def fake_create_connection(address, *args, **kwargs):
+            connected.append(address)
+            raise OSError("no conectamos de verdad en el test")
+
+        session = SafeSession(allow_private=False)
+        with mock.patch("socket.getaddrinfo", side_effect=fake_getaddrinfo):
+            with mock.patch("safe_http.socket.create_connection", side_effect=fake_create_connection):
+                with self.assertRaises(Exception):
+                    session.get("http://public-test.invalid/", timeout=2)
+        self.assertEqual(connected, [("93.184.216.34", 80)])
+
+    def test_metadata_ip_literal_blocked_with_allow_private(self):
+        with self.assertRaises(UnsafeUrlError):
+            validate_url("http://169.254.169.254/latest/meta-data/", allow_private=True)
+        with self.assertRaises(UnsafeUrlError):
+            validate_url("http://[fd00:ec2::254]/", allow_private=True)
 
 
 if __name__ == "__main__":

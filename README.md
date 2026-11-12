@@ -1,291 +1,267 @@
 # Desenlace
 
-Desenlace es una herramienta para **convertir enlaces con anuncios o pasos
-intermedios en el enlace de descarga final** y, si quieres, descargar el archivo
-automáticamente.
+Desenlace convierte un enlace con anuncios, esperas o pasos intermedios en el
+enlace de descarga real, y puede descargar el archivo por ti.
 
-Puedes usarla de dos formas:
+Puedes usarlo de dos formas:
 
 - **Interfaz web**: pegas los enlaces, eliges una carpeta y pulsas un botón.
-- **Línea de comandos (CLI)**: para pegar una orden en la terminal.
+- **Línea de comandos**: escribes una orden en la terminal.
 
-No necesitas saber programar para usarla.
+No necesitas saber programar.
 
 ---
 
-## ¿Qué puedes hacer?
+## Qué puedes hacer
 
-- Resolver enlaces de acortadores, safelinks y páginas con esperas.
-- Descargar el archivo final, o solo obtener su enlace.
-- Automatizar páginas que piden varios clics, esperas o cerrar ventanas.
-- Resolver enlaces de canales públicos de Telegram.
-- Descargar archivos enviados por bots de Telegram (requiere configuración
-  opcional).
+- Resolver enlaces de acortadores, enlaces de descarga con esperas y páginas
+  con varios pasos (clic, espera, cerrar ventanas, pulsar «Descargar»).
+- Descargar el archivo final, o sólo obtener su enlace.
+- Resolver enlaces públicos de canales de Telegram.
+- Descargar archivos que te envía un bot de Telegram (requiere configuración).
+- Averiguar por qué un enlace no funciona con el modo diagnóstico.
 
 ---
 
 ## Antes de empezar
 
-Necesitas:
-
 - Un ordenador con Windows, macOS o Linux.
-- **Python 3.10 o superior** instalado.
+- **Python 3.10 o superior**.
 - Conexión a Internet.
-- Unos 200 MB libres si vas a usar el navegador automatizado.
+- Unos 300 MB libres si vas a usar el navegador automatizado.
 
-### Comprobar que tienes Python
-
-Abre una terminal y escribe:
+### Comprobar Python
 
 ```bash
 python3 --version
 ```
 
-En Windows prueba con:
-
-```bash
-python --version
-```
-
-Debe aparecer una versión **3.10 o superior**. Si no aparece, instala Python
-desde <https://www.python.org/downloads/>. En Windows marca la casilla
-**"Add Python to PATH"** durante la instalación.
+En Windows prueba `python --version`. Debe aparecer 3.10 o superior. Si no lo
+tienes, instálalo desde <https://www.python.org/downloads/>. En Windows marca
+**«Add Python to PATH»** durante la instalación.
 
 ---
 
-## Instalación (solo la primera vez)
+## Instalación
 
-### 1. Descargar el proyecto
+Hazlo una sola vez.
+
+### 1. Descarga el proyecto
 
 ```bash
 git clone https://github.com/mariomartinezregidor/Desenlace.git
 cd Desenlace
 ```
 
-Si no tienes `git`, descarga el proyecto como ZIP desde GitHub y descomprímelo.
+Sin `git`: descarga el ZIP desde GitHub y descomprímelo.
 
-### 2. Crear un entorno aislado e instalar las dependencias
+### 2. Crea el entorno e instala las dependencias
 
 **Linux o macOS:**
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-**Windows (PowerShell o CMD):**
+**Windows:**
 
 ```bash
 python -m venv venv
 venv\Scripts\activate
-python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Sabrás que el entorno está activo porque la terminal mostrará `(venv)` al
-principio de la línea.
+Cuando el entorno está activo, la terminal muestra `(venv)` al principio de la
+línea. Tienes que activarlo cada vez que abras una terminal nueva.
 
-### 3. Instalar el navegador automatizado (recomendado)
-
-```bash
-playwright install chromium
-```
-
-Si el comando anterior falla, prueba:
+### 3. Ejecuta la configuración guiada
 
 ```bash
-python -m playwright install chromium
+python3 desenlace.py setup
 ```
 
-> Este paso descarga un navegador de unos 130 MB. Solo hay que hacerlo una vez.
+El asistente:
+
+- Comprueba que tu instalación es correcta.
+- Descarga el navegador automatizado si falta (unos 130 MB, una sola vez).
+- Te ofrece guardar los datos de Telegram si quieres usar los bots.
+
+Puedes volver a ejecutarlo cuando quieras.
 
 ---
 
-## Uso: Interfaz Web (recomendado)
+## Uso: interfaz web
 
-1. Activa el entorno si no lo está:
-
-   ```bash
-   source venv/bin/activate      # Linux / macOS
-   venv\Scripts\activate         # Windows
-   ```
-
+1. Activa el entorno (`source venv/bin/activate` o `venv\Scripts\activate`).
 2. Arranca la interfaz:
 
    ```bash
    python3 desenlace_web.py
    ```
 
-   En Windows, si `python3` no funciona:
+   En Windows, si `python3` no funciona, usa `python`.
 
-   ```bash
-   python desenlace_web.py
-   ```
-
-3. Se abrirá tu navegador en `http://127.0.0.1:8765`. Si no se abre, copia esa
-   dirección y pégala manualmente.
-
-4. **Pega los enlaces**, uno por línea, en el cuadro de texto.
-
+3. Se abre tu navegador en `http://127.0.0.1:8765`. Si no se abre, copia esa
+   dirección y pégala en el navegador.
+4. **Pega los enlaces**, uno por línea.
 5. Pulsa **Seleccionar carpeta** y elige dónde guardar los archivos.
-
-6. Elige las opciones que necesites:
+6. Elige las opciones:
 
    | Opción | Para qué sirve |
    | --- | --- |
-   | **Solo obtener enlace final** | No descarga nada; solo muestra los enlaces resueltos y permite copiarlos. |
+   | **Solo obtener enlace final** | No descarga; muestra los enlaces resueltos y permite copiarlos. |
    | **Sobrescribir archivos existentes** | Reemplaza archivos con el mismo nombre. |
-   | **Usar navegador** | Fuerza el navegador automatizado desde el principio. |
-   | **Auto-navegador si falla** | Recomendado para páginas con varios pasos, esperas o verificaciones. |
+   | **Usar navegador** | Usa el navegador automatizado desde el principio. |
+   | **Auto-navegador si falla** | Recomendado para páginas con varios pasos o verificaciones. |
 
-7. Pulsa **Descargar** (o **Obtener enlaces** si marcaste el modo de solo
+7. Pulsa **Descargar** (o **Obtener enlaces** si marcaste la opción de solo
    enlace).
+8. Verás el progreso y un registro de lo que ocurre. Puedes pulsar
+   **Cancelar** en cualquier momento.
+9. Si usaste **Solo obtener enlace final**, al terminar verás los enlaces con el
+   botón **Copiar todos**.
 
-8. Verás el progreso, el archivo actual y un registro de lo que ocurre. Puedes
-   pulsar **Cancelar** si quieres detenerlo.
+La interfaz sólo funciona en tu propio ordenador (`127.0.0.1`): no es visible
+desde otras máquinas.
 
-9. Al terminar, si usaste **Solo obtener enlace final**, aparecerá un cuadro con
-   los enlaces resueltos y el botón **Copiar todos**.
-
-### Cambiar el puerto o no abrir el navegador
+Para cambiar el puerto o no abrir el navegador:
 
 ```bash
 python3 desenlace_web.py --port 9000
 python3 desenlace_web.py --no-browser
 ```
 
-Por defecto la interfaz solo escucha en tu propio ordenador
-(`127.0.0.1`), no queda expuesta a Internet.
-
 ---
 
-## Uso: Línea de comandos (CLI)
+## Uso: línea de comandos
 
-La forma más rápida de resolver un enlace:
+Para resolver y descargar un enlace:
 
 ```bash
-python3 desenlace.py "https://ejemplo.com/enlace-con-anuncios"
+python3 desenlace.py "https://ejemplo.com/enlace"
 ```
 
 El archivo se guarda en la carpeta `downloads/`.
 
-### Ejemplos útiles
+### Ejemplos
 
 ```bash
 # Elegir la carpeta de destino
 python3 desenlace.py -o "Mis descargas" "https://ejemplo.com/enlace"
 
-# Elegir el nombre del archivo (si es un único enlace)
+# Elegir el nombre del archivo (un único enlace)
 python3 desenlace.py -o "pelicula.zip" "https://ejemplo.com/enlace"
 
-# Solo mostrar el enlace final, sin descargar
+# Sólo mostrar el enlace final, sin descargar
 python3 desenlace.py --info "https://ejemplo.com/enlace"
 
-# Resolver varios enlaces de un archivo de texto
+# Varios enlaces desde un archivo de texto
 python3 desenlace.py -f enlaces.txt -o descargas
 
-# Descargar varios a la vez
+# Varios a la vez
 python3 desenlace.py -f enlaces.txt -j 4
 ```
 
-### Formato de `enlaces.txt`
-
-Un enlace por línea. Las líneas que empiezan por `#` se ignoran:
+`enlaces.txt` tiene un enlace por línea. Las líneas que empiezan por `#` se
+ignoran:
 
 ```text
-# Mis enlaces pendientes
+# Pendientes
 https://ejemplo.com/enlace-1
 https://ejemplo.com/enlace-2
 ```
 
-### Opciones más usadas
+### Opciones principales
 
 | Opción | Qué hace |
 | --- | --- |
 | `-o RUTA` | Carpeta o archivo de destino. |
-| `--info` | Solo muestra el enlace final; no descarga. |
-| `-f ARCHIVO` | Lee los enlaces desde un archivo de texto. |
-| `-j N` | Procesa N enlaces en paralelo. |
+| `--info` | Muestra el enlace final sin descargar. |
+| `-f ARCHIVO` | Lee los enlaces de un archivo de texto. |
+| `-j N` | Procesa N enlaces a la vez. |
 | `--force` | Sobrescribe archivos existentes. |
 | `--skip-existing` | No vuelve a descargar lo que ya existe. |
-| `--auto-browser` | Usa el navegador automáticamente si la página se resiste. |
+| `--auto-browser` | Usa el navegador si la página no se resuelve de forma normal. |
 | `--browser` | Usa el navegador desde el principio. |
-| `--cookies ARCHIVO` | Usa cookies para páginas que piden sesión. |
-| `--user-agent TEXTO` | Cambia el navegador que se anuncia al servidor. |
-| `-H "Nombre: valor"` | Añade una cabecera HTTP. |
+| `--diagnose` | Explica paso a paso por qué un enlace funciona o no. |
+| `--cookies ARCHIVO` | Usa cookies de una sesión iniciada. |
+| `-H "Nombre: valor"` | Añade una cabecera HTTP. Puede repetirse. |
+| `--user-agent TEXTO` | Cambia el identificador del navegador enviado. |
 | `--timeout SEGUNDOS` | Tiempo máximo por petición. |
-| `--max-wait SEGUNDOS` | Tiempo máximo de espera en verificación o flujo automático. |
-| `--retries N` | Reintentos ante errores de red. |
-| `--refresh` | Ignora la caché y vuelve a resolver. |
-| `--verbose` / `-v` | Muestra más detalles del proceso. |
-| `--help` | Muestra todas las opciones disponibles. |
+| `--max-wait SEGUNDOS` | Tiempo máximo de espera de una página. |
+| `--retries N` | Reintentos ante errores de conexión. |
+| `--refresh` | Ignora la memoria de enlaces ya resueltos. |
+| `--no-cache` | No usa ni guarda esa memoria. |
+| `-v` | Muestra más detalles del proceso. |
+| `--help` | Lista todas las opciones. |
 
-> Consejo: si una página no se resuelve, prueba primero con `--auto-browser`.
+Si una página no se resuelve, prueba primero con `--auto-browser`.
 
 ---
 
-## Multi-Click Bypasser: páginas con varios pasos
+## Diagnóstico: por qué no funciona un enlace
 
-Algunas webs no muestran el archivo hasta que haces una secuencia como:
+```bash
+python3 desenlace.py --diagnose "https://ejemplo.com/enlace"
+```
 
-1. Pulsar **"Paso 1: Clic aquí"**.
-2. Esperar un contador de 10 segundos.
-3. Cerrar una ventana publicitaria.
-4. Pulsar **"Descargar"**.
+No descarga nada. Muestra cada paso del recorrido, y si falla, explica el motivo
+y qué puedes probar. Úsalo antes de escribir a nadie con un problema, y
+adjunta su resultado si pides ayuda.
 
-Desenlace puede hacer esos pasos por ti con el **navegador automatizado**.
+---
 
-### En la CLI
+## Páginas con varios pasos (navegador automatizado)
 
-Añade `--auto-browser`:
+Algunas webs no muestran el archivo hasta que haces una secuencia: pulsar
+«Paso 1», esperar un contador, cerrar una ventana publicitaria y pulsar
+«Descargar». Desenlace puede hacer esos pasos por ti con un navegador
+automatizado.
 
 ```bash
 python3 desenlace.py --auto-browser "https://sitio-de-descarga.com/archivo"
 ```
 
-Si quieres forzar el navegador desde el primer momento:
+Para forzar el navegador desde el primer momento:
 
 ```bash
 python3 desenlace.py --browser "https://sitio-de-descarga.com/archivo"
 ```
 
-### En la interfaz web
+En la interfaz web, marca **Auto-navegador si falla**.
 
-Marca la casilla **Auto-navegador si falla** (o **Usar navegador** para
-forzarlo).
+Al usarlo:
 
-### Qué esperar
-
-- Pueden abrirse y cerrarse pestañas automáticamente.
+- Pueden abrirse y cerrarse pestañas automáticamente. No cierres el navegador
+  que se abre.
 - Las esperas de la página se aceleran.
-- No toques el navegador mientras trabaja.
 - Si tarda demasiado, aumenta el límite:
 
   ```bash
   python3 desenlace.py --auto-browser --max-wait 180 "https://sitio.com/archivo"
   ```
 
-- Si sigue fallando, prueba con cookies:
+- Si la página pide sesión, exporta las cookies de tu navegador a un archivo de
+  texto y úsalas:
 
   ```bash
   python3 desenlace.py --auto-browser --cookies cookies.txt "https://sitio.com/archivo"
   ```
 
-> Los captchas que exigen que una persona resuelva un puzzle no se pueden
-> saltar automáticamente. En esos casos necesitas usar una sesión válida con
-> `--cookies` o resolverlo manualmente.
+  Tu archivo de cookies es privado: no lo compartas ni lo subas a ningún sitio.
+
+> Los captchas que exigen que una persona resuelva un puzzle no se pueden saltar
+> automáticamente. En ese caso necesitas una sesión válida con `--cookies`.
 
 ---
 
-## Telegram Resolver
+## Telegram
 
-Puedes pegar enlaces de Telegram igual que cualquier otro enlace.
+### Canales públicos (no requiere configuración)
 
-### Canales públicos
-
-Enlaces como:
+Enlaces como estos:
 
 ```text
 https://t.me/nombre_del_canal/123
@@ -296,58 +272,40 @@ https://t.me/s/nombre_del_canal
 python3 desenlace.py --auto-browser "https://t.me/nombre_del_canal/123"
 ```
 
-El navegador abrirá la versión pública del canal y extraerá el archivo, vídeo o
-audio disponible.
+El navegador abre la versión pública del canal y extrae el archivo, vídeo o
+audio que contiene el mensaje.
 
-### Bots de Telegram
+### Bots de Telegram (requiere configuración)
 
-Enlaces como:
+Enlaces como este:
 
 ```text
 https://t.me/NombreDelBot?start=abc123
 ```
 
-Para estos enlaces necesitas configurar una sesión de Telegram. Solo hay que
-hacerlo una vez.
+Necesitas tres datos de tu cuenta de Telegram. Se configuran una sola vez.
 
-#### 1. Copia el archivo de configuración
+#### 1. Obtén tus datos de Telegram
 
-**Linux o macOS:**
+1. Entra en <https://my.telegram.org> e inicia sesión con tu cuenta.
+2. Abre **API development tools**.
+3. Crea una aplicación si no tienes ninguna (el nombre da igual).
+4. Anota el **App api_id** y el **App api_hash**.
 
-```bash
-cp .env.example .env
-```
-
-**Windows:**
+#### 2. Guárdalos (recomendado: asistente)
 
 ```bash
-copy .env.example .env
+python3 desenlace.py setup
 ```
 
-#### 2. Rellena tus datos
+Cuando el asistente pregunte, responde que sí y pega cada valor. Los valores se
+guardan en el **llavero de tu sistema** (el almacén de contraseñas del
+ordenador) y no se muestran en pantalla.
 
-Abre `.env` con un editor de texto y sustituye los valores de ejemplo:
+#### 3. Genera la sesión de Telegram
 
-```text
-TELEGRAM_API_ID=<TU_API_ID_AQUI>
-TELEGRAM_API_HASH=<TU_API_HASH_AQUI>
-TELEGRAM_SESSION_STRING=<TU_SESSION_STRING_AQUI>
-```
-
-No escribas estos datos en el README, en capturas ni en mensajes. Son privados.
-
-#### 3. Obtén `API_ID` y `API_HASH`
-
-1. Entra en <https://my.telegram.org>.
-2. Inicia sesión con tu cuenta de Telegram.
-3. Abre **API development tools**.
-4. Crea una aplicación si no tienes una.
-5. Copia el **App api_id** y el **App api_hash** en tu `.env`.
-
-#### 4. Genera la sesión
-
-Crea un archivo llamado `generar_sesion.py` con este contenido (sustituye los
-placeholders por tus datos):
+Crea un archivo llamado `generar_sesion.py` con este contenido. Sustituye los
+marcadores por tus datos:
 
 ```python
 from telethon.sync import TelegramClient
@@ -366,114 +324,139 @@ Ejecútalo:
 python generar_sesion.py
 ```
 
-Te pedirá el teléfono y el código que recibirás en Telegram. Al terminar,
-imprimirá una cadena larga. Cópiala en `TELEGRAM_SESSION_STRING` dentro de tu
-`.env`.
+Te pedirá tu teléfono y el código que Telegram te envía. Al terminar imprimirá
+una cadena larga. **Esa cadena es tu sesión: trátala como una contraseña.**
+Guárdala con `python3 desenlace.py setup` (opción «Sesión de Telegram»).
 
-#### 5. Usa el enlace del bot
+Cuando termines, borra `generar_sesion.py` y la cadena de tu pantalla.
+
+#### 4. Usa el enlace del bot
 
 ```bash
 python3 desenlace.py --auto-browser "https://t.me/NombreDelBot?start=abc123"
 ```
 
-También puedes pegarlo en la interfaz web con **Auto-navegador si falla**
-marcado.
+### Alternativa: archivo `.env`
 
-#### Si algo no funciona
+Si no puedes usar el llavero de tu sistema, copia el archivo de ejemplo y
+rellénalo:
 
-- **"Telegram no está configurado"**: revisa que `.env` exista y tenga los tres
-  valores rellenos.
-- **"La sesión no está autorizada"**: vuelve a generar `TELEGRAM_SESSION_STRING`.
-- **El bot no responde**: comprueba el nombre del bot y que el enlace sea
-  correcto.
-- **No quiero configurar Telegram**: los canales públicos siguen funcionando;
-  solo los bots necesitan esta configuración.
+```bash
+cp .env.example .env          # Linux / macOS
+copy .env.example .env        # Windows
+```
 
-> Nunca subas tu archivo `.env` a GitHub ni lo compartas. El proyecto ya lo
-> ignora por defecto.
+Después edita `.env` con tus valores. **No subas `.env` a GitHub**: el proyecto
+ya lo ignora, pero no lo compartas nunca.
+
+### Problemas con Telegram
+
+- **«Telegram no está configurado»**: ejecuta `python3 desenlace.py setup` y
+  revisa que los tres datos aparezcan como «configurado».
+- **«La sesión no está autorizada»**: genera una sesión nueva (paso 3).
+- **El bot no responde**: revisa el nombre del bot y que el enlace sea correcto.
+- **No quiero configurar Telegram**: los canales públicos funcionan igual.
+
+---
+
+## Opciones avanzadas
+
+Puedes ajustar algunos valores por defecto en el archivo `.env` (o en las
+variables de entorno de tu sistema). Las opciones de la línea de comandos tienen
+prioridad sobre estas.
+
+| Variable | Valor por defecto | Qué controla |
+| --- | --- | --- |
+| `DESENLACE_MAX_REDIRECTS` | `10` | Máximo de redirecciones por petición. |
+| `DESENLACE_BROWSER_TIMEOUT` | `120` | Tiempo máximo del navegador automatizado, en segundos. |
+| `DESENLACE_ALLOW_PRIVATE` | `0` | Permite redes locales. Déjalo en `0`. |
+
+Si activas `DESENLACE_ALLOW_PRIVATE`, la herramienta mostrará un aviso en cada
+ejecución. Actívalo sólo para probar servidores propios en tu red local.
 
 ---
 
 ## Problemas frecuentes
 
-### "No se reconoce la página"
-
-Prueba con el navegador:
-
-```bash
-python3 desenlace.py --auto-browser --verbose "https://ejemplo.com/enlace"
-```
-
-### La página pide Cloudflare o "No soy un robot"
-
-Usa `--auto-browser`. Si el reto sigue apareciendo, espera un rato, prueba desde
-otra red o usa cookies de una sesión válida:
+**«No se reconoce la página»**
+Prueba con el navegador automatizado y el diagnóstico:
 
 ```bash
-python3 desenlace.py --auto-browser --cookies cookies.txt "https://ejemplo.com/enlace"
+python3 desenlace.py --diagnose --auto-browser "https://ejemplo.com/enlace"
 ```
 
-### `playwright: command not found`
+**La página muestra Cloudflare o «No soy un robot»**
+Usa `--auto-browser`. Si sigue apareciendo, espera un rato, prueba desde otra
+red, o usa `--cookies` con una sesión válida.
 
-Activa el entorno y vuelve a instalar el navegador:
+**`playwright: command not found` o el navegador no está**
+Activa el entorno y ejecuta:
 
 ```bash
-source venv/bin/activate      # Linux / macOS
-venv\Scripts\activate         # Windows
-python -m playwright install chromium
+python3 desenlace.py setup
 ```
 
-En Linux, si faltan librerías del sistema:
+En Linux, si faltan librerías del sistema, el asistente te indicará cómo
+instalarlas.
 
-```bash
-python -m playwright install-deps chromium
-```
+**Se guardó un archivo `enlace.url` en lugar del archivo**
+El destino final es una página web, no un archivo. Usa `--info` para ver el
+enlace.
 
-### Se ha guardado un archivo `enlace.url` en vez del archivo
+**El archivo no tiene extensión**
+La herramienta la deduce del servidor. Si no puede, renómbralo tú.
 
-Significa que el destino final es una página web, no un archivo. Usa `--info`
-para ver el enlace, o revisa que el enlace de origen sea el correcto.
+**No tengo permisos para guardar en esa carpeta**
+Elige otra carpeta, por ejemplo tu carpeta de Descargas.
 
-### El archivo descargado no tiene extensión
+**Windows no reconoce `python`**
+Vuelve a instalar Python marcando **«Add Python to PATH»**, o usa `py`.
 
-La herramienta intenta deducirla del servidor. Si no puede, puedes renombrarlo
-manualmente.
+**«No pública» / «metadatos bloqueado»**
+La herramienta bloquea direcciones locales y privadas por seguridad. Es el
+comportamiento esperado.
 
-### No tengo permisos para guardar en esa carpeta
+**El llavero no está disponible (Linux sin servicio de contraseñas)**
+Usa la alternativa del archivo `.env` descrita en la sección de Telegram.
 
-Elige otra carpeta, por ejemplo tu carpeta de Descargas o `downloads`.
-
-### Windows no reconoce `python`
-
-Vuelve a instalar Python marcando **"Add Python to PATH"**, o usa `py` en lugar
-de `python`.
-
-### Por seguridad no descarga una dirección local
-
-La herramienta bloquea direcciones locales y privadas para evitar usos
-peligrosos. Es el comportamiento esperado.
+**Estoy detrás de un proxy corporativo**
+Desenlace no usa el proxy configurado en tu sistema, por seguridad. Necesitarás
+una conexión directa a Internet.
 
 ---
 
 ## Privacidad y seguridad
 
-- Los tokens, cookies y sesiones **no se muestran** en los mensajes de la
-  herramienta.
-- No compartas tu archivo `.env`, tus cookies ni tu sesión de Telegram.
-- Usa la herramienta solo con contenido que tengas derecho a descargar.
+- Tus tokens, cookies y sesión de Telegram **no se muestran** en pantalla ni en
+  los registros.
+- No compartas tu llavero, tu archivo `.env`, tus cookies ni tu sesión de
+  Telegram.
+- Usa la herramienta sólo con contenido que tengas derecho a descargar.
 - La interfaz web escucha únicamente en tu ordenador.
 
 ---
 
-## Actualizar la herramienta
-
-Si instalaste con `git`:
+## Actualizar
 
 ```bash
 git pull
 pip install -r requirements.txt
-playwright install chromium
+python3 desenlace.py setup
 ```
+
+---
+
+## Desarrollo
+
+Para ejecutar las pruebas:
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q                    # todas, incluidas las de navegador
+pytest -q -m "not browser"   # sin navegador
+```
+
+Las pruebas de navegador necesitan Chromium (`python3 desenlace.py setup`).
 
 ---
 
@@ -481,8 +464,6 @@ playwright install chromium
 
 <https://github.com/mariomartinezregidor/Desenlace>
 
-Si encuentras un problema, abre una incidencia en GitHub indicando:
-
-- El enlace que falla (si no contiene datos privados).
-- El mensaje de error.
-- Tu sistema operativo.
+Si encuentras un problema, abre una incidencia indicando el mensaje de error, tu
+sistema operativo y la salida de `--diagnose`. Antes de compartir cualquier
+salida, **borra cualquier dato personal o enlace privado**.

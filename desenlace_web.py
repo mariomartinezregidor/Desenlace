@@ -24,7 +24,7 @@ import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, TypedDict
+from typing import Any, TypedDict
 from urllib.parse import parse_qs, urlsplit
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -39,15 +39,16 @@ from desenlace import (  # noqa: E402
     DEFAULT_CACHE_TTL,
     DEFAULT_MAX_REDIRECTS,
     DEFAULT_RETRIES,
-    LinkResolver,
-    Resolution,
+    Hooks,
+    ProcessOptions,
     ResolutionCache,
     ResolveError,
-    browser_resolve_and_download,
     load_cookie_file,
     parse_extra_headers,
+    process_url,
     redact_url,
 )
+import config  # noqa: E402
 
 MAX_LOG_LINES = 400
 MAX_REQUEST_BODY = 1_000_000
@@ -221,17 +222,6 @@ class Job:
             }
 
 
-class WebResolver(LinkResolver):
-    """Resolver que envía su traza al log del trabajo en vez de a stderr."""
-
-    def __init__(self, job: Job, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self.job = job
-
-    def _log(self, mensaje: str) -> None:
-        self.job.anadir_log(f"{self.prefix}{mensaje}")
-
-
 TRABAJOS: dict[str, Job] = {}
 TRABAJOS_LOCK = threading.Lock()
 
@@ -256,93 +246,6 @@ def registrar_trabajo(trabajo: Job) -> None:
 def obtener_trabajo(trabajo_id: str) -> Job | None:
     with TRABAJOS_LOCK:
         return TRABAJOS.get(trabajo_id)
-
-
-def _descargar_enlace(
-    resolver: WebResolver,
-    url: str,
-    carpeta: Path,
-    force: bool,
-    browser: bool,
-    on_progress: Callable[[int, int], None],
-    opciones: dict[str, Any] | None = None,
-) -> tuple[Path, str]:
-    """Resuelve y descarga un enlace; devuelve (destino, nombre_de_archivo)."""
-    if resolver.job.cancelar.is_set():
-        raise ResolveError("Descarga cancelada por el usuario.")
-
-    if browser:
-        final_url, filename, destino = browser_resolve_and_download(
-            url,
-            str(carpeta),
-            force=force,
-            as_dir=True,
-            timeout=resolver.timeout,
-            max_wait=resolver.max_wait,
-            verbose=True,
-            user_agent=(opciones or {}).get("user_agent"),
-            resolver=resolver,
-        )
-        # Mantener el nombre visible mientras se descarga por HTTP.
-        resolver.job.registrar_archivo(filename)
-        if destino is None:
-            # Resolver por HTTP a partir de la URL final.
-            resultado = Resolution(
-                final_url=final_url,
-                filename=filename,
-                referer=url,
-                hops=0,
-                page_url=final_url,
-            )
-            destino = resolver.download(
-                resultado,
-                str(carpeta),
-                force=force,
-                as_dir=True,
-                progress=on_progress,
-            )
-        return destino, filename
-
-    resultado = resolver.resolve(url)
-    resolver.job.registrar_archivo(resultado.filename)
-    destino = resolver.download(
-        resultado,
-        str(carpeta),
-        force=force,
-        as_dir=True,
-        progress=on_progress,
-    )
-    return destino, resultado.filename
-
-
-def _obtener_enlace_final(
-    resolver: WebResolver,
-    url: str,
-    browser: bool,
-    opciones: dict[str, Any] | None = None,
-) -> str:
-    """Resuelve el enlace y devuelve sólo la URL final, sin guardar nada."""
-    if resolver.job.cancelar.is_set():
-        raise ResolveError("Resolución cancelada por el usuario.")
-    if browser:
-        final_url, _nombre, _destino = browser_resolve_and_download(
-            url,
-            None,
-            timeout=resolver.timeout,
-            max_wait=resolver.max_wait,
-            verbose=True,
-            save=False,
-            user_agent=(opciones or {}).get("user_agent"),
-            resolver=resolver,
-        )
-        return final_url
-    resultado = resolver.resolve(url)
-    if resultado.prefetched is not None:
-        try:
-            resultado.prefetched.unlink(missing_ok=True)
-        except OSError:
-            pass
-    return resultado.final_url
 
 
 def _resultado_ok(
@@ -381,6 +284,36 @@ def _registrar_fallo(
     )
 
 
+def _opciones_web(
+    carpeta: Path,
+    force: bool,
+    browser: bool,
+    auto_browser: bool,
+    solo_enlace: bool,
+    cache: ResolutionCache,
+    extra: dict[str, Any],
+) -> ProcessOptions:
+    """Traduce los ajustes de la interfaz al lenguaje del orquestador."""
+    return ProcessOptions(
+        output=str(carpeta),
+        as_dir=True,
+        force=force,
+        info_only=solo_enlace,
+        browser=browser,
+        auto_browser=auto_browser,
+        use_cache=True,
+        verbose=True,
+        cache=cache,
+        user_agent=extra.get("user_agent"),
+        headers=dict(extra.get("headers") or {}),
+        cookies=extra.get("cookies"),
+        retries=extra.get("retries", DEFAULT_RETRIES),
+        max_redirects=extra.get("max_redirects", DEFAULT_MAX_REDIRECTS),
+        allow_private=extra.get("allow_private", False),
+        browser_timeout=extra.get("browser_timeout", 120.0),
+    )
+
+
 def _procesar_enlace(
     job: Job,
     indice: int,
@@ -395,56 +328,41 @@ def _procesar_enlace(
     log_lock: threading.Lock,
     opciones: dict[str, Any] | None = None,
 ) -> None:
-    """Procesa un enlace, incluyendo el reintento opcional con navegador."""
-    opciones = dict(opciones or {})
-    opciones.setdefault("browser_fallback", auto_browser)
+    """Procesa un enlace con el orquestador común y registra el resultado."""
     job.iniciar_enlace(indice, url)
     job.anadir_log(f"[{indice}/{total}] {redact_url(url)}")
     inicio = time.monotonic()
-    resolver = WebResolver(
-        job,
-        verbose=True,
-        cache=cache,
-        log_lock=log_lock,
-        prefix=f"[{indice}/{total}] ",
-        **opciones,
+    options = _opciones_web(
+        carpeta, force, browser, auto_browser, solo_enlace, cache, opciones or {}
     )
+    hooks = Hooks(
+        log=job.anadir_log,
+        progress=job.actualizar_progreso,
+        cancelled=job.cancelar.is_set,
+        on_filename=job.registrar_archivo,
+        log_lock=log_lock,
+    )
+    resultado = process_url(url, options, hooks, index=indice, total=total)
 
-    def on_progress(descargado: int, total_bytes: int) -> None:
-        if job.cancelar.is_set():
-            raise ResolveError("Descarga cancelada por el usuario.")
-        job.actualizar_progreso(descargado, total_bytes)
-
-    def intentar(usar_browser: bool) -> tuple[Path | None, str, str]:
-        if solo_enlace:
-            final = _obtener_enlace_final(resolver, url, usar_browser, opciones)
-            return None, "", final
-        destino, nombre = _descargar_enlace(
-            resolver, url, carpeta, force, usar_browser, on_progress, opciones
-        )
-        return destino, nombre, ""
-
-    try:
-        destino, nombre, final = intentar(browser)
-    except Exception as exc:
-        if not (auto_browser and not browser):
-            _registrar_fallo(job, indice, url, exc, inicio)
-            return
-        job.anadir_log(f"    HTTP falló ({exc}); reintentando con navegador...")
-        try:
-            destino, nombre, final = intentar(True)
-        except Exception as exc2:
-            _registrar_fallo(job, indice, url, exc2, inicio)
-            return
+    if resultado.error is not None:
+        _registrar_fallo(job, indice, url, resultado.error, inicio)
+        return
 
     if solo_enlace:
+        final = resultado.resolution.final_url if resultado.resolution else ""
         job.registrar_exito()
         job.anadir_log(f"    enlace final: {final}")
-    else:
-        job.registrar_archivo(nombre)
-        job.registrar_exito()
-        job.anadir_log(f"    guardado {destino.name if destino else nombre}")
-    job.anadir_resultado(_resultado_ok(indice, url, destino, inicio, final))
+        job.anadir_resultado(_resultado_ok(indice, url, None, inicio, final))
+        return
+
+    destino = resultado.destination
+    if destino is None:
+        _registrar_fallo(job, indice, url, ResolveError("No se obtuvo archivo."), inicio)
+        return
+    job.registrar_archivo(destino.name)
+    job.registrar_exito()
+    job.anadir_log(f"    guardado {destino.name}")
+    job.anadir_resultado(_resultado_ok(indice, url, destino, inicio))
 
 
 def ejecutar_trabajo(
@@ -690,7 +608,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-redirects",
         type=int,
-        default=DEFAULT_MAX_REDIRECTS,
+        default=None,
         metavar="N",
         help=(
             "Límite estricto de redirecciones HTTP "
@@ -717,9 +635,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         cookies = load_cookie_file(args.cookies) if args.cookies else None
         headers = parse_extra_headers(args.header)
-    except ResolveError as exc:
+        settings = config.load_settings()
+    except (ResolveError, config.ConfigError) as exc:
         print(f"Error en las opciones: {exc}", file=sys.stderr)
         return 1
+
+    max_redirects = args.max_redirects if args.max_redirects is not None else settings.max_redirects
+    allow_private = bool(args.allow_private or settings.allow_private)
+    if allow_private:
+        print(
+            "AVISO: --allow-private activo. La protección contra redes locales "
+            "está desactivada (los endpoints de metadatos siguen bloqueados).",
+            file=sys.stderr,
+        )
 
     servidor = ThreadingHTTPServer((args.host, args.port), Handler)
     servidor.daemon_threads = True
@@ -730,8 +658,9 @@ def main(argv: list[str] | None = None) -> int:
         "headers": headers,
         "cookies": cookies,
         "retries": args.retries,
-        "max_redirects": args.max_redirects,
-        "allow_private": args.allow_private,
+        "max_redirects": max_redirects,
+        "allow_private": allow_private,
+        "browser_timeout": settings.browser_timeout,
     }
     url = f"http://{args.host}:{args.port}/"
     print(f"Interfaz de descargas disponible en {url}")

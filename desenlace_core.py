@@ -21,11 +21,13 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import (
     parse_qs,
+    parse_qsl,
     unquote,
     unquote_plus,
     urlencode,
     urljoin,
     urlsplit,
+    urlunsplit,
 )
 
 from bs4 import Tag
@@ -264,6 +266,18 @@ _METADATA_HOSTS = frozenset(
         "instance-data",
     }
 )
+# Endpoints de metadatos de nube. Son el objetivo más sensible de un SSRF
+# (credenciales temporales), así que se bloquean siempre, incluso con
+# --allow-private.
+_ALWAYS_BLOCKED_IPS = frozenset(
+    {
+        ipaddress.ip_address("169.254.169.254"),  # AWS, GCP, Azure, DigitalOcean...
+        ipaddress.ip_address("169.254.170.2"),  # AWS ECS
+        ipaddress.ip_address("fd00:ec2::254"),  # AWS IPv6
+        ipaddress.ip_address("100.100.100.200"),  # Alibaba Cloud
+    }
+)
+
 _DNS_CACHE: dict[tuple[str, int], tuple[float, tuple[str, ...] | None]] = {}
 _DNS_LOCK = threading.Lock()
 _DNS_TTL = 300.0
@@ -278,6 +292,12 @@ def normalized_host(url_or_host: str) -> str:
         except ValueError:
             return ""
     return value.split(":")[0].strip("[]").rstrip(".")
+
+
+def _is_always_blocked_ip(address: ipaddress._BaseAddress) -> bool:
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    return address in _ALWAYS_BLOCKED_IPS
 
 
 def _is_blocked_ip(address: ipaddress._BaseAddress) -> bool:
@@ -337,6 +357,13 @@ def validate_url(url: str, *, allow_private: bool = False) -> None:
     host = parts.hostname.lower().rstrip(".")
     if host in _METADATA_HOSTS or host.endswith(".internal"):
         raise UnsafeUrlError(f"Host de metadatos bloqueado: {host}")
+    literal_ip = host.strip("[]")
+    try:
+        literal_address = ipaddress.ip_address(literal_ip)
+    except ValueError:
+        literal_address = None
+    if literal_address is not None and _is_always_blocked_ip(literal_address):
+        raise UnsafeUrlError(f"Endpoint de metadatos bloqueado: {literal_ip}")
     if allow_private:
         return
 
@@ -372,6 +399,51 @@ def validate_url(url: str, *, allow_private: bool = False) -> None:
             raise UnsafeUrlError(
                 f"El host {host!r} resuelve a una dirección no pública ({raw})."
             )
+
+
+def validated_addresses(host: str, port: int, *, allow_private: bool = False) -> list[str]:
+    """Resuelve un host en el mismo instante en que se va a conectar.
+
+    A diferencia de :func:`validate_url` (que usa caché), esta consulta es
+    fresca y devuelve sólo las IPs que se pueden usar. Si alguna dirección no
+    es pública se rechaza todo el host (fallo cerrado). La conexión debe
+    hacerse exclusivamente a una de estas IPs.
+    """
+    literal = host.strip("[]")
+    try:
+        address = ipaddress.ip_address(literal)
+    except ValueError:
+        address = None
+    if address is not None:
+        if _is_always_blocked_ip(address):
+            raise UnsafeUrlError(f"Endpoint de metadatos bloqueado: {literal}")
+        if not allow_private and _is_blocked_ip(address):
+            raise UnsafeUrlError(f"Dirección IP no pública bloqueada: {literal}")
+        return [literal]
+
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError, OSError) as exc:
+        raise UnsafeUrlError(f"No se pudo resolver el host {host!r}.") from exc
+    addresses: list[str] = []
+    for info in infos:
+        raw = info[4][0]
+        if raw not in addresses:
+            addresses.append(raw)
+    if not addresses:
+        raise UnsafeUrlError(f"El host {host!r} no tiene direcciones.")
+    for raw in addresses:
+        try:
+            parsed = ipaddress.ip_address(raw)
+        except ValueError as exc:
+            raise UnsafeUrlError(f"El host {host!r} resolvió a una IP no válida.") from exc
+        if _is_always_blocked_ip(parsed):
+            raise UnsafeUrlError(f"El host {host!r} resuelve a un endpoint de metadatos.")
+        if not allow_private and _is_blocked_ip(parsed):
+            raise UnsafeUrlError(
+                f"El host {host!r} resuelve a una dirección no pública ({raw})."
+            )
+    return addresses
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +590,26 @@ def is_redirect_form(form: Tag, fields: dict[str, str]) -> bool:
 # ---------------------------------------------------------------------------
 # Nombres de archivo y destinos
 # ---------------------------------------------------------------------------
+
+
+def redact_url(url: str, max_value: int = 24) -> str:
+    """Acorta valores sensibles para los logs (tokens, claves, firmas...)."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if not parts.query:
+        return url
+    sensitive = re.compile(r"(token|key|sig|hash|auth|session|csrf|redirect|url)", re.I)
+    pairs: list[tuple[str, str]] = []
+    for key, value in parse_qsl(parts.query, keep_blank_values=True):
+        if sensitive.search(key) or len(value) > max_value:
+            if len(value) > 12:
+                value = f"{value[:6]}...{value[-4:]}"
+            else:
+                value = "..."
+        pairs.append((key, value))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(pairs), parts.fragment))
 
 
 def sanitize_filename(name: str, max_len: int = 180) -> str:
@@ -853,3 +945,25 @@ _is_redirect_form = is_redirect_form
 _js_unescape = js_unescape
 _first_js_url = first_js_url
 URL_IN_TEXT_RE = _URL_IN_TEXT_RE
+
+
+TEMP_DIR_PREFIX = "desenlace-"
+
+
+def discard_temp_file(path: Path | None) -> None:
+    """Borra un archivo temporal creado por Desenlace (y su carpeta, si es nuestra).
+
+    Sólo borra carpetas cuyo nombre empieza por ``desenlace-``: nunca toca
+    directorios ajenos aunque el archivo esté en ellos.
+    """
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+        parent = path.parent
+        if parent.name.startswith(TEMP_DIR_PREFIX):
+            import shutil
+
+            shutil.rmtree(parent, ignore_errors=True)
+    except OSError:
+        pass

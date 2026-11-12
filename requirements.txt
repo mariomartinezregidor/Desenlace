@@ -1,7 +1,8 @@
 requests>=2.31.0
 beautifulsoup4>=4.12.0
-# Navegador headless para challenges anti-bot y flujos multi-click.
-# Después de instalarlo: playwright install chromium
+# Navegador automatizado (después: python3 desenlace.py setup)
 playwright>=1.40.0
-# Opcional: resolver enlaces de bots de Telegram (requiere API_ID/API_HASH).
+# Opcional: bots de Telegram
 telethon>=1.36.0
+# Guarda los datos de Telegram en el llavero del sistema
+keyring>=24

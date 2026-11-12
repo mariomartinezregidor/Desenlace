@@ -13,7 +13,6 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import desenlace  # noqa: E402
 from browser_resolver import BrowserOutcome  # noqa: E402
 from desenlace import LinkResolver, Resolution  # noqa: E402
 
@@ -161,7 +160,7 @@ class ResolutionFlowTests(unittest.TestCase):
             allow_private=True,
             browser_fallback=True,
         )
-        with mock.patch.object(desenlace, "BrowserResolver", FakeBrowserResolver):
+        with mock.patch("resolver.BrowserResolver", FakeBrowserResolver):
             with redirect_stderr(io.StringIO()):
                 result = resolver.resolve(f"{base}/gate")
         self.assertEqual(result.final_url, f"{base}/file")
