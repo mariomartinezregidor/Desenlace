@@ -2,8 +2,8 @@
 """Desenlace: resuelve enlaces con anuncios y descarga el archivo final.
 
 Uso:
-    python3 desenlace.py "https://enlace"
-    python3 desenlace.py setup
+    desenlace "https://enlace"
+    desenlace setup
 
 Este módulo es sólo un punto de entrada y una fachada de compatibilidad: el
 trabajo real está repartido en cli.py, orchestrator.py, resolver.py,

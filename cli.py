@@ -1,8 +1,8 @@
 """Línea de comandos de Desenlace.
 
-Uso básico:  python3 desenlace.py "https://enlace"
-Subcomandos: python3 desenlace.py setup      (configuración guiada)
-             python3 desenlace.py --diagnose "https://enlace"
+Uso básico:  desenlace "https://enlace"
+Subcomandos: desenlace setup      (configuración guiada)
+             desenlace --diagnose "https://enlace"
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from desenlace_core import (
     redact_url,
 )
 from models import JobResult
+from report import render_report, status_of
 from orchestrator import Hooks, ProcessOptions, process_url
 from plugins import PLUGINS
 from resolver import ResolutionCache, load_cookie_file
@@ -98,7 +99,7 @@ def parse_extra_headers(items: list[str] | None) -> dict[str, str]:
 def build_parser() -> argparse.ArgumentParser:
     settings_hint = " (por defecto: DESENLACE_MAX_REDIRECTS o 10)"
     parser = argparse.ArgumentParser(
-        prog="desenlace.py",
+        prog="desenlace",
         description=(
             "Resuelve enlaces con anuncios o pasos intermedios y descarga el archivo final. "
             "Subcomandos: 'setup' (configuración guiada)."
@@ -362,26 +363,32 @@ def _emit(line: str, lock: threading.Lock) -> None:
 
 
 def _report(results: list[JobResult], info_only: bool) -> int:
-    failures = 0
-    for job in results:
-        if job.error is not None:
-            failures += 1
-            _warn(f"Error con {redact_url(job.start_url)}: {job.error}")
-            continue
+    failures = sum(1 for job in results if status_of(job) == "ERROR")
+    if info_only:
+        # Salida pensada para scripts: una URL final por línea.
+        for job in results:
+            if job.resolution is not None:
+                print(job.resolution.final_url)
+            else:
+                _warn(f"Error con {redact_url(job.start_url)}: {job.error or 'sin resultado'}")
+        return 1 if failures else 0
+
+    if len(results) == 1:
+        job = results[0]
         if job.resolution is None:
-            failures += 1
-            _warn(f"Error con {redact_url(job.start_url)}: sin resultado")
-            continue
-        if info_only:
-            print(job.resolution.final_url)
-            continue
+            _warn(f"Error con {redact_url(job.start_url)}: {job.error or 'sin resultado'}")
+            return 1
         if job.skipped:
             print(f"Omitido (ya existe): {job.destination} ({job.elapsed:.1f}s)")
-            continue
+            return 0
         size = job.destination.stat().st_size if job.destination else 0
         print(f"URL final: {job.resolution.final_url}")
         print(f"Archivo: {job.resolution.filename}")
         print(f"Descargado: {job.destination} ({size} bytes) ({job.elapsed:.1f}s)")
+        return 0
+
+    print()
+    print(render_report(results))
     return 1 if failures else 0
 
 

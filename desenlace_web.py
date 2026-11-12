@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""Desenlace: interfaz web local para resolver enlaces y descargar los archivos.
+"""Desenlace: interfaz web local.
 
-Sirve una página HTML en 127.0.0.1 con un cuadro de texto para pegar los
-enlaces, un botón que abre el diálogo nativo para elegir la carpeta de destino
-y barras de progreso de la descarga. Incluye un modo de solo enlace final que
-resuelve sin descargar y permite copiar los resultados.
+Sirve la página en 127.0.0.1 y expone una pequeña API JSON. La lógica de
+descarga está en web_jobs.py y orchestrator.py.
 
 Uso:
-    python3 desenlace_web.py
-    python3 desenlace_web.py --port 9000 --no-browser
+    desenlace-web
+    desenlace-web --port 9000 --no-browser
 """
 
 from __future__ import annotations
@@ -19,43 +17,23 @@ import os
 import subprocess
 import sys
 import threading
-import time
-import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+import config
+from desenlace import DEFAULT_MAX_REDIRECTS, DEFAULT_RETRIES, ResolveError, load_cookie_file, parse_extra_headers
+from web_jobs import Job, iniciar_trabajo, obtener_trabajo, parse_links, preparar_destino
+
+# La interfaz viaja dentro del paquete (carpeta webui/).
 BASE_DIR = Path(__file__).resolve().parent
-HTML_FILE = BASE_DIR / "index.html"
+HTML_FILE = BASE_DIR / "webui" / "index.html"
 
-# Permite importar desenlace.py aunque se lance desde otra carpeta.
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
-
-from desenlace import (  # noqa: E402
-    CACHE_FILE,
-    DEFAULT_CACHE_TTL,
-    DEFAULT_MAX_REDIRECTS,
-    DEFAULT_RETRIES,
-    Hooks,
-    ProcessOptions,
-    ResolutionCache,
-    ResolveError,
-    load_cookie_file,
-    parse_extra_headers,
-    process_url,
-    redact_url,
-)
-import config  # noqa: E402
-
-MAX_LOG_LINES = 400
 MAX_REQUEST_BODY = 1_000_000
-JOB_RETENTION_SECONDS = 3600
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
-# Diálogo nativo de selección de carpeta (tkinter en un subproceso aislado).
 FOLDER_DIALOG_SCRIPT = """
 import sys
 try:
@@ -73,28 +51,6 @@ except Exception:
     sys.exit(4)
 print(path or "")
 """
-
-
-def parse_links(text: str) -> list[str]:
-    """Convierte el texto pegado en una lista de URLs únicas y válidas."""
-    urls: list[str] = []
-    vistos: set[str] = set()
-    for numero, linea in enumerate(text.lstrip("\ufeff").splitlines(), 1):
-        linea = linea.strip()
-        if not linea or linea.startswith("#"):
-            continue
-        for token in linea.split():
-            if not token.startswith(("http://", "https://")):
-                raise ResolveError(
-                    f"Enlace no válido en la línea {numero}: {redact_url(token)}"
-                )
-            if token not in vistos:
-                vistos.add(token)
-                urls.append(token)
-    if not urls:
-        raise ResolveError("No se indicó ningún enlace.")
-    return urls
-
 
 def elegir_carpeta() -> str:
     """Abre el diálogo nativo de carpetas y devuelve la ruta elegida."""
@@ -114,297 +70,6 @@ def elegir_carpeta() -> str:
     if proceso.returncode != 0:
         raise ResolveError("No se pudo abrir el selector de carpetas del sistema.")
     return proceso.stdout.strip()
-
-
-class Resultado(TypedDict):
-    """Resultado serializable de un enlace procesado."""
-
-    indice: int
-    enlace: str
-    archivo: str
-    final: str
-    estado: str
-    error: str
-    transcurrido: float
-
-
-class Job:
-    """Estado compartido de una descarga en curso."""
-
-    def __init__(self, total: int) -> None:
-        self.id = uuid.uuid4().hex
-        self.total = total
-        self.completados = 0
-        self.fallidos = 0
-        self.estado = "en_curso"
-        self.indice = 0
-        self.enlace = ""
-        self.archivo = ""
-        self.descargado = 0
-        self.total_bytes = 0
-        self.inicio = time.monotonic()
-        self.cancelar = threading.Event()
-        self._log: list[str] = []
-        self._resultados: list[Resultado] = []
-        self._lock = threading.Lock()
-
-    def anadir_log(self, mensaje: str) -> None:
-        with self._lock:
-            self._log.append(mensaje)
-            if len(self._log) > MAX_LOG_LINES:
-                del self._log[: len(self._log) - MAX_LOG_LINES]
-
-    def anadir_resultado(self, resultado: Resultado) -> None:
-        with self._lock:
-            self._resultados.append(resultado)
-
-    def iniciar_enlace(self, indice: int, url: str) -> None:
-        with self._lock:
-            self.indice = indice
-            self.enlace = redact_url(url)
-            self.archivo = ""
-            self.descargado = 0
-            self.total_bytes = 0
-
-    def actualizar_progreso(self, descargado: int, total: int) -> None:
-        with self._lock:
-            self.descargado = descargado
-            self.total_bytes = total
-
-    def registrar_archivo(self, nombre: str) -> None:
-        with self._lock:
-            self.archivo = nombre
-
-    def registrar_exito(self) -> None:
-        with self._lock:
-            self.completados += 1
-
-    def registrar_fallo(self) -> None:
-        with self._lock:
-            self.fallidos += 1
-
-    def expirado(self, ahora: float) -> bool:
-        with self._lock:
-            return (
-                self.estado != "en_curso"
-                and ahora - self.inicio >= JOB_RETENTION_SECONDS
-            )
-
-    def resumen(self) -> tuple[int, int]:
-        with self._lock:
-            return self.completados, self.fallidos
-
-    def finalizar(self) -> None:
-        with self._lock:
-            if self.cancelar.is_set():
-                self.estado = "cancelado"
-            elif self.fallidos:
-                self.estado = "terminado_con_errores"
-            else:
-                self.estado = "terminado"
-
-    def instantanea(self) -> dict[str, Any]:
-        with self._lock:
-            return {
-                "id": self.id,
-                "estado": self.estado,
-                "total": self.total,
-                "completados": self.completados,
-                "fallidos": self.fallidos,
-                "indice": self.indice,
-                "enlace": self.enlace,
-                "archivo": self.archivo,
-                "descargado": self.descargado,
-                "total_bytes": self.total_bytes,
-                "transcurrido": round(time.monotonic() - self.inicio, 1),
-                "log": list(self._log),
-                "resultados": list(self._resultados),
-            }
-
-
-TRABAJOS: dict[str, Job] = {}
-TRABAJOS_LOCK = threading.Lock()
-
-
-def _limpiar_trabajos_bloqueado() -> None:
-    ahora = time.monotonic()
-    expirados = [
-        trabajo_id
-        for trabajo_id, trabajo in TRABAJOS.items()
-        if trabajo.expirado(ahora)
-    ]
-    for trabajo_id in expirados:
-        del TRABAJOS[trabajo_id]
-
-
-def registrar_trabajo(trabajo: Job) -> None:
-    with TRABAJOS_LOCK:
-        _limpiar_trabajos_bloqueado()
-        TRABAJOS[trabajo.id] = trabajo
-
-
-def obtener_trabajo(trabajo_id: str) -> Job | None:
-    with TRABAJOS_LOCK:
-        return TRABAJOS.get(trabajo_id)
-
-
-def _resultado_ok(
-    indice: int, url: str, destino: Path | None, inicio: float, final: str = ""
-) -> Resultado:
-    return {
-        "indice": indice,
-        "enlace": redact_url(url),
-        "archivo": destino.name if destino is not None else "",
-        "final": final,
-        "estado": "ok",
-        "error": "",
-        "transcurrido": round(time.monotonic() - inicio, 1),
-    }
-
-
-def _registrar_fallo(
-    job: Job,
-    indice: int,
-    url: str,
-    exc: Exception,
-    inicio: float,
-) -> None:
-    job.registrar_fallo()
-    job.anadir_log(f"    error: {exc}")
-    job.anadir_resultado(
-        {
-            "indice": indice,
-            "enlace": redact_url(url),
-            "archivo": "",
-            "final": "",
-            "estado": "error",
-            "error": str(exc),
-            "transcurrido": round(time.monotonic() - inicio, 1),
-        }
-    )
-
-
-def _opciones_web(
-    carpeta: Path,
-    force: bool,
-    browser: bool,
-    auto_browser: bool,
-    solo_enlace: bool,
-    cache: ResolutionCache,
-    extra: dict[str, Any],
-) -> ProcessOptions:
-    """Traduce los ajustes de la interfaz al lenguaje del orquestador."""
-    return ProcessOptions(
-        output=str(carpeta),
-        as_dir=True,
-        force=force,
-        info_only=solo_enlace,
-        browser=browser,
-        auto_browser=auto_browser,
-        use_cache=True,
-        verbose=True,
-        cache=cache,
-        user_agent=extra.get("user_agent"),
-        headers=dict(extra.get("headers") or {}),
-        cookies=extra.get("cookies"),
-        retries=extra.get("retries", DEFAULT_RETRIES),
-        max_redirects=extra.get("max_redirects", DEFAULT_MAX_REDIRECTS),
-        allow_private=extra.get("allow_private", False),
-        browser_timeout=extra.get("browser_timeout", 120.0),
-    )
-
-
-def _procesar_enlace(
-    job: Job,
-    indice: int,
-    total: int,
-    url: str,
-    carpeta: Path,
-    force: bool,
-    browser: bool,
-    auto_browser: bool,
-    solo_enlace: bool,
-    cache: ResolutionCache,
-    log_lock: threading.Lock,
-    opciones: dict[str, Any] | None = None,
-) -> None:
-    """Procesa un enlace con el orquestador común y registra el resultado."""
-    job.iniciar_enlace(indice, url)
-    job.anadir_log(f"[{indice}/{total}] {redact_url(url)}")
-    inicio = time.monotonic()
-    options = _opciones_web(
-        carpeta, force, browser, auto_browser, solo_enlace, cache, opciones or {}
-    )
-    hooks = Hooks(
-        log=job.anadir_log,
-        progress=job.actualizar_progreso,
-        cancelled=job.cancelar.is_set,
-        on_filename=job.registrar_archivo,
-        log_lock=log_lock,
-    )
-    resultado = process_url(url, options, hooks, index=indice, total=total)
-
-    if resultado.error is not None:
-        _registrar_fallo(job, indice, url, resultado.error, inicio)
-        return
-
-    if solo_enlace:
-        final = resultado.resolution.final_url if resultado.resolution else ""
-        job.registrar_exito()
-        job.anadir_log(f"    enlace final: {final}")
-        job.anadir_resultado(_resultado_ok(indice, url, None, inicio, final))
-        return
-
-    destino = resultado.destination
-    if destino is None:
-        _registrar_fallo(job, indice, url, ResolveError("No se obtuvo archivo."), inicio)
-        return
-    job.registrar_archivo(destino.name)
-    job.registrar_exito()
-    job.anadir_log(f"    guardado {destino.name}")
-    job.anadir_resultado(_resultado_ok(indice, url, destino, inicio))
-
-
-def ejecutar_trabajo(
-    job: Job,
-    enlaces: list[str],
-    carpeta: Path,
-    force: bool,
-    browser: bool = False,
-    auto_browser: bool = False,
-    solo_enlace: bool = False,
-    opciones: dict[str, Any] | None = None,
-) -> None:
-    cache = ResolutionCache(CACHE_FILE, ttl=DEFAULT_CACHE_TTL, enabled=True)
-    carpeta.mkdir(parents=True, exist_ok=True)
-    log_lock = threading.Lock()
-    total = len(enlaces)
-
-    for indice, url in enumerate(enlaces, 1):
-        if job.cancelar.is_set():
-            break
-        _procesar_enlace(
-            job,
-            indice,
-            total,
-            url,
-            carpeta,
-            force,
-            browser,
-            auto_browser,
-            solo_enlace,
-            cache,
-            log_lock,
-            opciones,
-        )
-
-    job.finalizar()
-    completados, fallidos = job.resumen()
-    accion = "resueltos" if solo_enlace else "descargados"
-    job.anadir_log(
-        f"Fin: {completados}/{job.total} {accion}, {fallidos} con error."
-    )
-
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "Desenlace/1.0"
@@ -523,43 +188,21 @@ class Handler(BaseHTTPRequestHandler):
     def _descargar(self, datos: dict[str, Any]) -> None:
         try:
             enlaces = parse_links(str(datos.get("enlaces") or ""))
+            solo_enlace = bool(datos.get("soloEnlace"))
+            carpeta = preparar_destino(str(datos.get("carpeta") or "").strip(), solo_enlace)
         except ResolveError as exc:
             self._json({"error": str(exc)}, 400)
             return
 
-        solo_enlace = bool(datos.get("soloEnlace"))
-        carpeta_texto = str(datos.get("carpeta") or "").strip()
-        if not carpeta_texto and not solo_enlace:
-            self._json({"error": "Selecciona una carpeta de destino."}, 400)
-            return
-        carpeta = Path(carpeta_texto or "downloads").expanduser()
-        if not solo_enlace:
-            try:
-                carpeta.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                self._json({"error": f"No se puede usar esa carpeta: {exc}"}, 400)
-                return
-            if not carpeta.is_dir():
-                self._json({"error": "La ruta de destino no es una carpeta."}, 400)
-                return
-
-        job = Job(len(enlaces))
-        registrar_trabajo(job)
-        hilo = threading.Thread(
-            target=ejecutar_trabajo,
-            args=(
-                job,
-                enlaces,
-                carpeta,
-                bool(datos.get("force")),
-                bool(datos.get("browser")),
-                bool(datos.get("autoBrowser")),
-                solo_enlace,
-                getattr(self.server, "resolver_options", {}),
-            ),
-            daemon=True,
+        job = iniciar_trabajo(
+            enlaces,
+            carpeta,
+            force=bool(datos.get("force")),
+            browser=bool(datos.get("browser")),
+            auto_browser=bool(datos.get("autoBrowser")),
+            solo_enlace=solo_enlace,
+            opciones=getattr(self.server, "resolver_options", {}),
         )
-        hilo.start()
         self._json({"id": job.id, "total": len(enlaces)})
 
 
@@ -625,7 +268,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     return parser
 
-
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not HTML_FILE.is_file():
@@ -674,7 +316,3 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         servidor.server_close()
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

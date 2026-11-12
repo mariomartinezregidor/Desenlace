@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 
 import config  # noqa: E402
 import desenlace_web  # noqa: E402
+import web_jobs  # noqa: E402
 from downloader import download_resolution  # noqa: E402
 from models import Resolution  # noqa: E402
 from safe_http import SafeSession  # noqa: E402
@@ -138,7 +139,7 @@ class WebApiEndToEndTests(unittest.TestCase):
         cls.site, cls.site_thread, cls.base = _start(_LocalSite)
         cls.tmp = tempfile.TemporaryDirectory()
         cls.cache_patch = mock.patch.object(
-            desenlace_web, "CACHE_FILE", Path(cls.tmp.name) / "cache.json"
+            web_jobs, "CACHE_FILE", Path(cls.tmp.name) / "cache.json"
         )
         cls.cache_patch.start()
         cls.api, cls.api_thread = cls._start_api()

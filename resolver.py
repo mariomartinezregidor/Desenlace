@@ -870,6 +870,7 @@ class LinkResolver:
             progress=progress,
             log=self._log,
             max_redirects=self.max_redirects,
+            resume_retries=self.retries,
         )
 
 

@@ -63,6 +63,7 @@ Sin `git`: descarga el ZIP desde GitHub y descomprímelo.
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+pip install .          # crea los comandos `desenlace` y `desenlace-web`
 ```
 
 **Windows:**
@@ -71,6 +72,7 @@ pip install -r requirements.txt
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
+pip install .          # crea los comandos `desenlace` y `desenlace-web`
 ```
 
 Cuando el entorno está activo, la terminal muestra `(venv)` al principio de la
@@ -79,7 +81,7 @@ línea. Tienes que activarlo cada vez que abras una terminal nueva.
 ### 3. Ejecuta la configuración guiada
 
 ```bash
-python3 desenlace.py setup
+desenlace setup
 ```
 
 El asistente:
@@ -98,7 +100,7 @@ Puedes volver a ejecutarlo cuando quieras.
 2. Arranca la interfaz:
 
    ```bash
-   python3 desenlace_web.py
+   desenlace-web
    ```
 
    En Windows, si `python3` no funciona, usa `python`.
@@ -129,8 +131,8 @@ desde otras máquinas.
 Para cambiar el puerto o no abrir el navegador:
 
 ```bash
-python3 desenlace_web.py --port 9000
-python3 desenlace_web.py --no-browser
+desenlace-web --port 9000
+desenlace-web --no-browser
 ```
 
 ---
@@ -140,7 +142,7 @@ python3 desenlace_web.py --no-browser
 Para resolver y descargar un enlace:
 
 ```bash
-python3 desenlace.py "https://ejemplo.com/enlace"
+desenlace "https://ejemplo.com/enlace"
 ```
 
 El archivo se guarda en la carpeta `downloads/`.
@@ -149,19 +151,19 @@ El archivo se guarda en la carpeta `downloads/`.
 
 ```bash
 # Elegir la carpeta de destino
-python3 desenlace.py -o "Mis descargas" "https://ejemplo.com/enlace"
+desenlace -o "Mis descargas" "https://ejemplo.com/enlace"
 
 # Elegir el nombre del archivo (un único enlace)
-python3 desenlace.py -o "pelicula.zip" "https://ejemplo.com/enlace"
+desenlace -o "pelicula.zip" "https://ejemplo.com/enlace"
 
 # Sólo mostrar el enlace final, sin descargar
-python3 desenlace.py --info "https://ejemplo.com/enlace"
+desenlace --info "https://ejemplo.com/enlace"
 
 # Varios enlaces desde un archivo de texto
-python3 desenlace.py -f enlaces.txt -o descargas
+desenlace -f enlaces.txt -o descargas
 
 # Varios a la vez
-python3 desenlace.py -f enlaces.txt -j 4
+desenlace -f enlaces.txt -j 4
 ```
 
 `enlaces.txt` tiene un enlace por línea. Las líneas que empiezan por `#` se
@@ -204,7 +206,7 @@ Si una página no se resuelve, prueba primero con `--auto-browser`.
 ## Diagnóstico: por qué no funciona un enlace
 
 ```bash
-python3 desenlace.py --diagnose "https://ejemplo.com/enlace"
+desenlace --diagnose "https://ejemplo.com/enlace"
 ```
 
 No descarga nada. Muestra cada paso del recorrido, y si falla, explica el motivo
@@ -221,13 +223,13 @@ Algunas webs no muestran el archivo hasta que haces una secuencia: pulsar
 automatizado.
 
 ```bash
-python3 desenlace.py --auto-browser "https://sitio-de-descarga.com/archivo"
+desenlace --auto-browser "https://sitio-de-descarga.com/archivo"
 ```
 
 Para forzar el navegador desde el primer momento:
 
 ```bash
-python3 desenlace.py --browser "https://sitio-de-descarga.com/archivo"
+desenlace --browser "https://sitio-de-descarga.com/archivo"
 ```
 
 En la interfaz web, marca **Auto-navegador si falla**.
@@ -240,14 +242,14 @@ Al usarlo:
 - Si tarda demasiado, aumenta el límite:
 
   ```bash
-  python3 desenlace.py --auto-browser --max-wait 180 "https://sitio.com/archivo"
+  desenlace --auto-browser --max-wait 180 "https://sitio.com/archivo"
   ```
 
 - Si la página pide sesión, exporta las cookies de tu navegador a un archivo de
   texto y úsalas:
 
   ```bash
-  python3 desenlace.py --auto-browser --cookies cookies.txt "https://sitio.com/archivo"
+  desenlace --auto-browser --cookies cookies.txt "https://sitio.com/archivo"
   ```
 
   Tu archivo de cookies es privado: no lo compartas ni lo subas a ningún sitio.
@@ -269,7 +271,7 @@ https://t.me/s/nombre_del_canal
 ```
 
 ```bash
-python3 desenlace.py --auto-browser "https://t.me/nombre_del_canal/123"
+desenlace --auto-browser "https://t.me/nombre_del_canal/123"
 ```
 
 El navegador abre la versión pública del canal y extrae el archivo, vídeo o
@@ -295,7 +297,7 @@ Necesitas tres datos de tu cuenta de Telegram. Se configuran una sola vez.
 #### 2. Guárdalos (recomendado: asistente)
 
 ```bash
-python3 desenlace.py setup
+desenlace setup
 ```
 
 Cuando el asistente pregunte, responde que sí y pega cada valor. Los valores se
@@ -326,14 +328,14 @@ python generar_sesion.py
 
 Te pedirá tu teléfono y el código que Telegram te envía. Al terminar imprimirá
 una cadena larga. **Esa cadena es tu sesión: trátala como una contraseña.**
-Guárdala con `python3 desenlace.py setup` (opción «Sesión de Telegram»).
+Guárdala con `desenlace setup` (opción «Sesión de Telegram»).
 
 Cuando termines, borra `generar_sesion.py` y la cadena de tu pantalla.
 
 #### 4. Usa el enlace del bot
 
 ```bash
-python3 desenlace.py --auto-browser "https://t.me/NombreDelBot?start=abc123"
+desenlace --auto-browser "https://t.me/NombreDelBot?start=abc123"
 ```
 
 ### Alternativa: archivo `.env`
@@ -351,7 +353,7 @@ ya lo ignora, pero no lo compartas nunca.
 
 ### Problemas con Telegram
 
-- **«Telegram no está configurado»**: ejecuta `python3 desenlace.py setup` y
+- **«Telegram no está configurado»**: ejecuta `desenlace setup` y
   revisa que los tres datos aparezcan como «configurado».
 - **«La sesión no está autorizada»**: genera una sesión nueva (paso 3).
 - **El bot no responde**: revisa el nombre del bot y que el enlace sea correcto.
@@ -382,7 +384,7 @@ ejecución. Actívalo sólo para probar servidores propios en tu red local.
 Prueba con el navegador automatizado y el diagnóstico:
 
 ```bash
-python3 desenlace.py --diagnose --auto-browser "https://ejemplo.com/enlace"
+desenlace --diagnose --auto-browser "https://ejemplo.com/enlace"
 ```
 
 **La página muestra Cloudflare o «No soy un robot»**
@@ -393,7 +395,7 @@ red, o usa `--cookies` con una sesión válida.
 Activa el entorno y ejecuta:
 
 ```bash
-python3 desenlace.py setup
+desenlace setup
 ```
 
 En Linux, si faltan librerías del sistema, el asistente te indicará cómo
@@ -441,7 +443,7 @@ una conexión directa a Internet.
 ```bash
 git pull
 pip install -r requirements.txt
-python3 desenlace.py setup
+desenlace setup
 ```
 
 ---
@@ -456,7 +458,7 @@ pytest -q                    # todas, incluidas las de navegador
 pytest -q -m "not browser"   # sin navegador
 ```
 
-Las pruebas de navegador necesitan Chromium (`python3 desenlace.py setup`).
+Las pruebas de navegador necesitan Chromium (`desenlace setup`).
 
 ---
 

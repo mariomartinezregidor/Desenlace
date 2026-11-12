@@ -19,7 +19,15 @@ from typing import Mapping
 
 KEYRING_SERVICE = "desenlace"
 SECRET_NAMES = ("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_SESSION_STRING")
-ENV_FILE = Path(__file__).resolve().parent / ".env"
+def _env_file() -> Path:
+    """Primer .env que exista: el de la carpeta actual y después el del proyecto."""
+    for candidate in (Path.cwd() / ".env", Path(__file__).resolve().parent / ".env"):
+        if candidate.is_file():
+            return candidate
+    return Path.cwd() / ".env"
+
+
+ENV_FILE = _env_file()
 
 _TRUE = {"1", "true", "yes", "on", "si", "sí"}
 _FALSE = {"0", "false", "no", "off", ""}
@@ -31,7 +39,7 @@ class ConfigError(ValueError):
 
 def load_dotenv(path: Path | None = None) -> dict[str, str]:
     """Lee un .env sencillo (KEY=VALUE). No modifica el entorno."""
-    env_path = path or ENV_FILE
+    env_path = path or _env_file()
     values: dict[str, str] = {}
     if not env_path.is_file():
         return values

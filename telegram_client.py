@@ -50,7 +50,7 @@ def telegram_credentials() -> tuple[int, str, str]:
         raise TelegramConfigError(
             "Telegram no está configurado. Faltan: "
             + ", ".join(missing)
-            + ". Ejecuta `python3 desenlace.py setup` para guardarlos en el "
+            + ". Ejecuta `desenlace setup` para guardarlos en el "
             "llavero del sistema, o rellena el archivo .env (ver .env.example)."
         )
     api_id_text = config.get_secret("TELEGRAM_API_ID") or ""
@@ -122,7 +122,7 @@ async def _run_bot(bot: str, command: str, *, timeout: float, save: bool) -> Tel
         if not await client.is_user_authorized():
             raise TelegramConfigError(
                 "La sesión de Telegram no está autorizada. Vuelve a generarla "
-                "con `python3 desenlace.py setup`."
+                "con `desenlace setup`."
             )
         try:
             entity = await client.get_entity(bot)

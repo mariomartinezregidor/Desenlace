@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "desenlace"
+version = "1.2.0"
+description = "Resuelve enlaces con anuncios o pasos intermedios y descarga el archivo final."
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["descargas", "acortadores", "redirecciones", "cli"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Operating System :: OS Independent",
+    "Environment :: Console",
+    "Topic :: Internet :: WWW/HTTP",
+]
+dependencies = [
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "playwright>=1.40.0",
+    "keyring>=24",
+]
+
+[project.optional-dependencies]
+telegram = ["telethon>=1.36.0"]
+dev = ["pytest>=8", "pytest-timeout>=2", "ruff>=0.5"]
+
+[project.scripts]
+desenlace = "cli:main"
+desenlace-web = "desenlace_web:main"
+
+[tool.setuptools]
+py-modules = [
+    "browser_resolver",
+    "cli",
+    "config",
+    "desenlace",
+    "desenlace_core",
+    "desenlace_web",
+    "diagnose",
+    "downloader",
+    "models",
+    "orchestrator",
+    "report",
+    "resolver",
+    "safe_http",
+    "setup_wizard",
+    "telegram_client",
+    "web_jobs",
+]
+packages = ["plugins", "webui"]
+
+[tool.setuptools.package-data]
+webui = ["index.html"]

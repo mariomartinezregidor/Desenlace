@@ -32,7 +32,7 @@ def _advice(message: str) -> list[str]:
             "por seguridad. Esto es lo esperado con enlaces normales."
         )
     if "telegram" in text:
-        tips.append("Para bots de Telegram ejecuta: python3 desenlace.py setup")
+        tips.append("Para bots de Telegram ejecuta: desenlace setup")
     if "límite" in text or "saltos" in text:
         tips.append("La cadena de redirecciones es muy larga. Prueba con --max-hops más alto.")
     if "timeout" in text or "tardó" in text or "agotó" in text:

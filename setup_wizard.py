@@ -1,4 +1,4 @@
-"""Asistente de configuración: ``python3 desenlace.py setup``.
+"""Asistente de configuración: ``desenlace setup``.
 
 Comprueba la instalación, instala el navegador si falta y guarda los datos de
 Telegram en el llavero del sistema. Nunca muestra los valores secretos.
@@ -140,7 +140,7 @@ def run_setup(argv: list[str]) -> int:
         print("Hay pasos pendientes (marcados como FALTA o ERROR).")
         return 1
     print("Listo para resolver enlaces. Prueba con:")
-    print('  python3 desenlace.py --info "https://enlace"')
+    print('  desenlace --info "https://enlace"')
     if not telegram_ready and not args.skip_telegram:
         print("Telegram no está configurado: los bots de Telegram no funcionarán.")
         print("Los canales públicos y el resto de enlaces sí.")

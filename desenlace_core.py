@@ -50,7 +50,21 @@ DEFAULT_RETRIES = 2
 TRANSIENT_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 BASE_DIR = Path(__file__).resolve().parent
-CACHE_FILE = BASE_DIR / ".desenlace_cache.json"
+
+
+def _user_cache_file() -> Path:
+    """Carpeta de caché del usuario (no dentro del paquete instalado)."""
+    override = os.environ.get("DESENLACE_CACHE_DIR")
+    if override:
+        root = Path(override).expanduser()
+    elif os.name == "nt":
+        root = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "desenlace"
+    else:
+        root = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "desenlace"
+    return root / "cache.json"
+
+
+CACHE_FILE = _user_cache_file()
 DOWNLOAD_DIR = Path("downloads")
 
 _DEST_LOCK = threading.Lock()
@@ -967,3 +981,15 @@ def discard_temp_file(path: Path | None) -> None:
             shutil.rmtree(parent, ignore_errors=True)
     except OSError:
         pass
+
+
+def reserve_exact(path: Path) -> Path:
+    """Reserva una ruta concreta (sin buscar nombres alternativos).
+
+    Se usa cuando la ruta es deliberada: sobrescritura con ``--force`` o la
+    reanudación de un ``.part`` existente.
+    """
+    with _DEST_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _RESERVED_PATHS.add(path)
+        return path
