@@ -37,11 +37,15 @@ if str(BASE_DIR) not in sys.path:
 from desenlace import (  # noqa: E402
     CACHE_FILE,
     DEFAULT_CACHE_TTL,
+    DEFAULT_MAX_REDIRECTS,
+    DEFAULT_RETRIES,
     LinkResolver,
     Resolution,
     ResolutionCache,
     ResolveError,
     browser_resolve_and_download,
+    load_cookie_file,
+    parse_extra_headers,
     redact_url,
 )
 
@@ -74,7 +78,7 @@ def parse_links(text: str) -> list[str]:
     """Convierte el texto pegado en una lista de URLs únicas y válidas."""
     urls: list[str] = []
     vistos: set[str] = set()
-    for numero, linea in enumerate(text.splitlines(), 1):
+    for numero, linea in enumerate(text.lstrip("\ufeff").splitlines(), 1):
         linea = linea.strip()
         if not linea or linea.startswith("#"):
             continue
@@ -261,6 +265,7 @@ def _descargar_enlace(
     force: bool,
     browser: bool,
     on_progress: Callable[[int, int], None],
+    opciones: dict[str, Any] | None = None,
 ) -> tuple[Path, str]:
     """Resuelve y descarga un enlace; devuelve (destino, nombre_de_archivo)."""
     if resolver.job.cancelar.is_set():
@@ -275,6 +280,8 @@ def _descargar_enlace(
             timeout=resolver.timeout,
             max_wait=resolver.max_wait,
             verbose=True,
+            user_agent=(opciones or {}).get("user_agent"),
+            resolver=resolver,
         )
         # Mantener el nombre visible mientras se descarga por HTTP.
         resolver.job.registrar_archivo(filename)
@@ -309,7 +316,10 @@ def _descargar_enlace(
 
 
 def _obtener_enlace_final(
-    resolver: WebResolver, url: str, browser: bool
+    resolver: WebResolver,
+    url: str,
+    browser: bool,
+    opciones: dict[str, Any] | None = None,
 ) -> str:
     """Resuelve el enlace y devuelve sólo la URL final, sin guardar nada."""
     if resolver.job.cancelar.is_set():
@@ -322,6 +332,8 @@ def _obtener_enlace_final(
             max_wait=resolver.max_wait,
             verbose=True,
             save=False,
+            user_agent=(opciones or {}).get("user_agent"),
+            resolver=resolver,
         )
         return final_url
     return resolver.resolve(url).final_url
@@ -375,8 +387,10 @@ def _procesar_enlace(
     solo_enlace: bool,
     cache: ResolutionCache,
     log_lock: threading.Lock,
+    opciones: dict[str, Any] | None = None,
 ) -> None:
     """Procesa un enlace, incluyendo el reintento opcional con navegador."""
+    opciones = opciones or {}
     job.iniciar_enlace(indice, url)
     job.anadir_log(f"[{indice}/{total}] {redact_url(url)}")
     inicio = time.monotonic()
@@ -386,6 +400,7 @@ def _procesar_enlace(
         cache=cache,
         log_lock=log_lock,
         prefix=f"[{indice}/{total}] ",
+        **opciones,
     )
 
     def on_progress(descargado: int, total_bytes: int) -> None:
@@ -395,10 +410,10 @@ def _procesar_enlace(
 
     def intentar(usar_browser: bool) -> tuple[Path | None, str, str]:
         if solo_enlace:
-            final = _obtener_enlace_final(resolver, url, usar_browser)
+            final = _obtener_enlace_final(resolver, url, usar_browser, opciones)
             return None, "", final
         destino, nombre = _descargar_enlace(
-            resolver, url, carpeta, force, usar_browser, on_progress
+            resolver, url, carpeta, force, usar_browser, on_progress, opciones
         )
         return destino, nombre, ""
 
@@ -433,6 +448,7 @@ def ejecutar_trabajo(
     browser: bool = False,
     auto_browser: bool = False,
     solo_enlace: bool = False,
+    opciones: dict[str, Any] | None = None,
 ) -> None:
     cache = ResolutionCache(CACHE_FILE, ttl=DEFAULT_CACHE_TTL, enabled=True)
     carpeta.mkdir(parents=True, exist_ok=True)
@@ -454,6 +470,7 @@ def ejecutar_trabajo(
             solo_enlace,
             cache,
             log_lock,
+            opciones,
         )
 
     job.finalizar()
@@ -613,6 +630,7 @@ class Handler(BaseHTTPRequestHandler):
                 bool(datos.get("browser")),
                 bool(datos.get("autoBrowser")),
                 solo_enlace,
+                getattr(self.server, "resolver_options", {}),
             ),
             daemon=True,
         )
@@ -636,6 +654,50 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Registrar cada petición HTTP"
     )
+    parser.add_argument(
+        "--user-agent", metavar="UA", help="User-Agent para las peticiones"
+    )
+    parser.add_argument(
+        "--cookies",
+        metavar="ARCHIVO",
+        help=(
+            "Archivo de cookies (Netscape o 'nombre=valor') para sitios con "
+            "Cloudflare o sesión iniciada"
+        ),
+    )
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=DEFAULT_RETRIES,
+        metavar="N",
+        help=f"Reintentos ante errores de red o HTTP 429/5xx (por defecto {DEFAULT_RETRIES})",
+    )
+    parser.add_argument(
+        "-H",
+        "--header",
+        action="append",
+        default=[],
+        metavar="CABECERA",
+        help="Cabecera HTTP extra. Se puede repetir.",
+    )
+    parser.add_argument(
+        "--max-redirects",
+        type=int,
+        default=DEFAULT_MAX_REDIRECTS,
+        metavar="N",
+        help=(
+            "Límite estricto de redirecciones HTTP "
+            f"(por defecto {DEFAULT_MAX_REDIRECTS})"
+        ),
+    )
+    parser.add_argument(
+        "--allow-private",
+        action="store_true",
+        help=(
+            "Permitir IPs privadas/loopback (desactiva SSRF). "
+            "Sólo para pruebas locales"
+        ),
+    )
     return parser
 
 
@@ -645,10 +707,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"No se encuentra {HTML_FILE}", file=sys.stderr)
         return 1
 
+    try:
+        cookies = load_cookie_file(args.cookies) if args.cookies else None
+        headers = parse_extra_headers(args.header)
+    except ResolveError as exc:
+        print(f"Error en las opciones: {exc}", file=sys.stderr)
+        return 1
+
     servidor = ThreadingHTTPServer((args.host, args.port), Handler)
     servidor.daemon_threads = True
     servidor.allow_reuse_address = True
     servidor.verbose = args.verbose  # type: ignore[attr-defined]
+    servidor.resolver_options = {  # type: ignore[attr-defined]
+        "user_agent": args.user_agent,
+        "headers": headers,
+        "cookies": cookies,
+        "retries": args.retries,
+        "max_redirects": args.max_redirects,
+        "allow_private": args.allow_private,
+    }
     url = f"http://{args.host}:{args.port}/"
     print(f"Interfaz de descargas disponible en {url}")
     print("Pulsa Ctrl+C para detenerla.")
