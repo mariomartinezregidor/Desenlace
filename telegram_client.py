@@ -2,9 +2,9 @@
 
 Configuración por entorno (nunca se registran los valores):
 
-    TELEGRAM_API_ID=123456
-    TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef
-    TELEGRAM_SESSION_STRING=...
+    TELEGRAM_API_ID=<TU_API_ID_AQUI>
+    TELEGRAM_API_HASH=<TU_API_HASH_AQUI>
+    TELEGRAM_SESSION_STRING=<TU_SESSION_STRING_AQUI>
 
 Sin esas variables se lanza :class:`TelegramConfigError`, un ``ResolveError``
 controlado que el motor muestra al usuario con instrucciones.

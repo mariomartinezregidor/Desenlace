@@ -1,331 +1,488 @@
 # Desenlace
 
-Desenlace resuelve cadenas de acortadores y redirecciones con anuncios
-(esperas, formularios y contadores de publicidad) y descarga el archivo final.
-Incluye una interfaz web local y una CLI.
+Desenlace es una herramienta para **convertir enlaces con anuncios o pasos
+intermedios en el enlace de descarga final** y, si quieres, descargar el archivo
+automáticamente.
 
-## Características
+Puedes usarla de dos formas:
 
-- **Arquitectura de plugins**: cada familia de acortadores es un archivo dentro
-  de `plugins/`. El registro los descubre automáticamente; añadir un sitio nuevo
-  no requiere tocar el núcleo (ver [Plugins](#arquitectura-de-plugins)).
-- **Protección SSRF**: se bloquean `file://`, `ftp://`, credenciales embebidas,
-  loopback, rangos privados y `169.254.169.254`, validando **cada salto** de la
-  cadena de redirecciones.
-- **Anti-bot con navegador headless**: si aparece Cloudflare, Turnstile,
-  reCAPTCHA, "Checking your browser" o "No soy un robot", se activa Playwright
-  automáticamente (`--auto-browser`) para pulsar la verificación y continuar.
-- **Multi-Click Download Bypasser**: cuando una web de descarga exige varios
-  pasos (clic → espera → cerrar pop-up → descargar), el plugin
-  `multi-click-bypasser` genera una secuencia `CLICK/WAIT/CLOSE_POPUP/EXTRACT_URL`
-  que el navegador ejecuta con deadline estricto y aceleración de timers.
-- **Telegram Resolver**: canales públicos (`t.me/canal/123`) vía preview web con
-  Playwright y bots (`t.me/bot?start=...`) vía Telethon, con configuración por
-  variables de entorno y errores controlados si no está configurado.
-- Resuelve wrappers, `wp-safelink`, AdLinkFly y clones, `ouo`, `mediafire`,
-  `meta refresh`, formularios automáticos y contadores, respetando los tiempos
-  de espera.
-- Redirectores reconocidos: `google.com/url`, `bing.com/ck/a`,
-  `duckduckgo.com/l`, Yahoo, `l.facebook.com/l.php`, Reddit, VK, Tumblr,
-  LinkedIn y pasarelas genéricas `/redirect?url=...`. El destino puede venir en
-  claro, URL-encoded o en base64 (`?u=`, `?a1=`, `?uddg=`…).
-- Acortadores con destino escondido en JavaScript: `window.location`, `atob()`,
-  `adf.ly` (`ysmm`) y código ofuscado con el *packer* de Dean Edwards.
-- Hosts de archivos convertidos a descarga directa antes de resolver: Google
-  Drive/Docs, Dropbox, OneDrive y Pixeldrain.
-- Detecta cuándo una página ya es el destino final y deja de encadenar sus
-  enlaces internos (útil con `--info` en artículos y blogs).
-- Reintentos automáticos con backoff ante errores de red y HTTP 429/5xx.
-- Cookies (`--cookies`) y User-Agent/cabeceras configurables para acortadores
-  protegidos por Cloudflare o que requieren sesión.
-- Caché local de páginas finales estables (`--refresh` para ignorarla).
-- Interfaz web en `127.0.0.1` con cuadro de texto para pegar los enlaces,
-  selector nativo de carpeta del PC, barras de progreso y un modo de solo
-  enlace final con copia al portapapeles.
-- CLI con paralelismo, destino configurable y nombres de archivo únicos. Si el
-  servidor no da un nombre con extensión, se deduce del `Content-Type`.
+- **Interfaz web**: pegas los enlaces, eliges una carpeta y pulsas un botón.
+- **Línea de comandos (CLI)**: para pegar una orden en la terminal.
 
-## Sitios y familias soportadas
+No necesitas saber programar para usarla.
 
-| Familia | Ejemplos |
-| --- | --- |
-| AdLinkFly y clones | `gplinks`, `try2link`, `droplink`, `mdiskshortner`, `tnlink`, `urlsopen`, `softurl`, `zflexlink`, `iflylink`, `shortxlinks` |
-| ShrinkMe / ShrinkE / Exe | `shrinkme.io`, `shrinke.me`, `exe.io`, `exey.io`, `za.gl`, `zshort.link` |
-| wp-safelink / safelink Blogger | `newwpsafelink`, `safelinku`, `bloggerpemula`, `sfl.gl` |
-| ouo y similares | `ouo.io`, `ouo.press`, `shrinkearn.com` |
-| Acortadores clásicos | `adf.ly` (`ysmm`), `shorte.st`, `bc.vc`, `adfoc.us`, `linkvertise` |
-| Redirectores | Google, Bing, DuckDuckGo, Yahoo, Facebook, Reddit, VK, Tumblr, LinkedIn |
-| Hosts de archivos | MediaFire, Google Drive/Docs, Dropbox, OneDrive, Pixeldrain, send.now |
-| Telegram | `t.me/canal/123`, `t.me/s/canal`, `t.me/bot?start=...` |
+---
 
-El motor aplica primero los plugins con prioridad menor (redirectores y
-detectores específicos) y después heurísticas genéricas (formularios ocultos,
-botones de continuar, `meta refresh`, JavaScript, iframes). Para sitios nuevos
-sin detector propio, `--auto-browser` suele resolverlos con Chromium.
+## ¿Qué puedes hacer?
 
-## Arquitectura de plugins
+- Resolver enlaces de acortadores, safelinks y páginas con esperas.
+- Descargar el archivo final, o solo obtener su enlace.
+- Automatizar páginas que piden varios clics, esperas o cerrar ventanas.
+- Resolver enlaces de canales públicos de Telegram.
+- Descargar archivos enviados por bots de Telegram (requiere configuración
+  opcional).
 
-```
-plugins/
-├── __init__.py        # descubrimiento, registro y agregación de hosts/markers
-├── base.py            # contrato Plugin + re-export de helpers
-├── redirectors.py     # Google/Bing/DDG/Facebook/... y pasarelas ?url=
-├── adlinkfly.py       # AdLinkFly, ShrinkMe, gplinks, try2link...
-├── wp_safelink.py     # wp-safelink y safelinks de Blogger
-├── adfly.py           # token ysmm
-├── file_hosts.py      # MediaFire + normalización Drive/Dropbox/OneDrive/Pixeldrain
-├── forms.py           # formularios de aterrizaje y formularios genéricos
-├── js_redirects.py    # meta-refresh, JS, base64, packer, atob, fromCharCode
-├── html_links.py      # enlaces/botones/data-* /iframes/onclick
-└── known_shorteners.py# catálogo de hosts con plantillas genéricas
-```
+---
 
-Un plugin es cualquier módulo que exponga `PLUGIN` o `PLUGINS`:
+## Antes de empezar
 
-```python
-# plugins/mi_sitio.py
-from plugins.base import Action, PageContext, Plugin
+Necesitas:
 
-def detect(ctx: PageContext) -> Action | None:
-    boton = ctx.soup.find("a", id="mi-boton")
-    if boton is None:
-        return None
-    return Action("goto", url=boton["href"])
+- Un ordenador con Windows, macOS o Linux.
+- **Python 3.10 o superior** instalado.
+- Conexión a Internet.
+- Unos 200 MB libres si vas a usar el navegador automatizado.
 
-PLUGIN = Plugin(
-    name="mi-sitio",
-    priority=50,                     # menor = antes
-    hosts=("mi-sitio.example",),     # heurísticas y ?url= genéricos
-    markers=("mi-boton",),           # cadenas de una página de espera
-    detect=detect,
-)
-```
+### Comprobar que tienes Python
 
-También existen `detect_url(url, hosts)` (destino en la propia URL) y
-`normalize(url)` (convertir una página de hosting en enlace directo). Para
-inspeccionar lo cargado: `python3 desenlace.py --list-plugins`.
-
-## Seguridad SSRF
-
-Cada petición —incluidos los redirects que sigue `requests`— pasa por
-`desenlace_core.validate_url`:
-
-- Sólo se permiten `http` y `https` (se rechazan `file://`, `ftp://`, etc.).
-- Se rechazan `localhost`, loopback (`127.0.0.0/8`, `::1`), rangos privados
-  (`10/8`, `172.16/12`, `192.168/16`, `fc00::/7`), link-local
-  (`169.254.0.0/16`) y endpoints de metadatos de nube (`169.254.169.254`,
-  `metadata.google.internal`).
-- Se resuelve el DNS y se comprueba que **todas** las IPs sean globales; si no
-  se puede resolver, se falla en cerrado.
-- El navegador headless también intercepta sus peticiones y bloquea las que
-  apunten a la red interna.
-- `--max-redirects N` limita estrictamente los saltos HTTP (por defecto 10).
-
-`--allow-private` desactiva las comprobaciones de IP (no las de esquema) y está
-pensado **sólo para tests locales**:
+Abre una terminal y escribe:
 
 ```bash
-python3 desenlace.py --allow-private --info "http://127.0.0.1:8000/prueba"
+python3 --version
 ```
 
-## Anti-bot con navegador headless
-
-`browser_resolver.py` usa Playwright y se activa sólo cuando el resolver HTTP
-detecta un challenge. Abre la URL, espera a que cambie el DOM, pulsa el checkbox
-de "No soy un robot" (incluidos iframes de reCAPTCHA/Turnstile), captura
-descargas, importa las cookies de vuelta al motor y devuelve la URL final.
+En Windows prueba con:
 
 ```bash
-python3 -m pip install -r requirements.txt
-python3 -m playwright install chromium   # descarga el binario (~130 MB)
-# o sólo el shell headless:
-python3 -m playwright install chromium-headless-shell
-
-python3 desenlace.py --auto-browser "https://sitio-con-cloudflare/XXXX"
+python --version
 ```
 
-`--browser` fuerza el navegador desde el principio; `--auto-browser` lo usa
-como capa secundaria automática y también reintenta desde cero si el flujo HTTP
-falla. Si el reto exige interacción humana (p. ej. resolver un puzzle), no hay
-bypass automático: usa `--cookies` con una sesión válida (`cf_clearance`).
+Debe aparecer una versión **3.10 o superior**. Si no aparece, instala Python
+desde <https://www.python.org/downloads/>. En Windows marca la casilla
+**"Add Python to PATH"** durante la instalación.
 
-## Multi-Click Download Bypasser
+---
 
-Muchas webs de descarga no exponen el archivo hasta completar una secuencia.
-`plugins/download_bypasser.py` analiza el DOM y genera un plan:
+## Instalación (solo la primera vez)
 
-```json
-[
-  {"kind": "wait", "seconds": 1.5},
-  {"kind": "click", "selector": "#step1"},
-  {"kind": "close_popup"},
-  {"kind": "wait", "seconds": 1.0},
-  {"kind": "click", "text": "Descargar"},
-  {"kind": "extract_url"}
-]
-```
-
-`browser_resolver.py` soporta las acciones `CLICK`, `WAIT`, `CLOSE_POPUP` y
-`EXTRACT_URL`:
-
-- **CLICK**: selector CSS o texto visible; tras el clic se espera a la red.
-- **WAIT**: espera un selector o N segundos (siempre acotado por el deadline).
-- **CLOSE_POPUP**: cierra las pestañas publicitarias y devuelve el foco a la
-  original. Las descargas capturadas se guardan aparte.
-- **EXTRACT_URL**: prioriza `a[download]`, `data-*`, enlaces con "descargar" y,
-  si no hay enlace, envía el formulario POST. Devuelve la URL al motor HTTP.
-
-El plan sólo se ejecuta cuando el flujo HTTP no puede avanzar (acción no
-detectada y página de acortador/descarga), con `--auto-browser`. Además:
-
-- Se inyecta un script que acelera `setTimeout`, `setInterval` y `Date.now`
-  (los contadores de 10 s se resuelven en milisegundos).
-- Timeout estricto: `min(--max-wait, 120 s)` para toda la secuencia; una espera
-  que consuma el presupuesto corta el flujo (`timed_out`).
-- Si el navegador captura la descarga, se guarda en un temporal y
-  `LinkResolver.download()` la mueve al destino final (campo `prefetched`).
-
-## Telegram Resolver
-
-`plugins/telegram_resolver.py` clasifica los enlaces:
-
-- **Canal público** (`t.me/canal/123` o `t.me/s/canal`): abre
-  `https://t.me/s/canal/123` con Playwright y extrae documentos, vídeos, audio o
-  fotos del DOM (selectores `tgme_widget_message_*` y CDN de Telegram).
-- **Bot** (`t.me/MiBot?start=...`): usa `telegram_client.py` (Telethon) para
-  enviar `/start` y recibir el archivo o enlace.
-
-Configuración (copia `.env.example` a `.env` o expórtalo en el shell):
+### 1. Descargar el proyecto
 
 ```bash
-export TELEGRAM_API_ID=123456
-export TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef
-export TELEGRAM_SESSION_STRING='1BVtsOK...'
+git clone https://github.com/mariomartinezregidor/Desenlace.git
+cd Desenlace
 ```
 
-Las credenciales se obtienen en <https://my.telegram.org>. Para generar la
-sesión:
+Si no tienes `git`, descarga el proyecto como ZIP desde GitHub y descomprímelo.
 
-```bash
-python - <<'PY'
-from telethon.sync import TelegramClient
-from telethon.sessions import StringSession
-api_id, api_hash = 123456, "TU_API_HASH"
-with TelegramClient(StringSession(), api_id, api_hash) as client:
-    print(client.session.save())
-PY
-```
+### 2. Crear un entorno aislado e instalar las dependencias
 
-Sin `TELEGRAM_SESSION_STRING` (o sin Telethon instalado) el bot devuelve un
-`TelegramConfigError` controlado con instrucciones; no se intenta usar Telegram
-Web, que exige login interactivo. Los archivos se descargan a un temporal y se
-mueven al destino al llamar a `download()`.
-
-## Requisitos
-
-- Python 3.10 o superior.
-- `requests`, `beautifulsoup4`, `playwright` y `telethon` (ver
-  `requirements.txt`).
-- Binario de Chromium: `python3 -m playwright install chromium`.
-- Para el selector de carpeta nativo: `tkinter` (viene con Python en Linux).
+**Linux o macOS:**
 
 ```bash
 python3 -m venv venv
-venv/bin/pip install -r requirements.txt
-venv/bin/playwright install chromium
+source venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-## Uso: interfaz web
+**Windows (PowerShell o CMD):**
 
 ```bash
-python3 desenlace_web.py                 # abre http://127.0.0.1:8765 en el navegador
-python3 desenlace_web.py --port 9000     # otro puerto
-python3 desenlace_web.py --no-browser    # no abrir el navegador
-python3 desenlace_web.py -v              # registrar cada petición HTTP
-python3 desenlace_web.py --cookies cookies.txt --user-agent "Mozilla/5.0 ..."
+python -m venv venv
+venv\Scripts\activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-Pega los enlaces (uno por línea), pulsa **Seleccionar carpeta** y luego
-**Descargar**. Verás una barra de progreso global y otra del archivo en curso,
-un log en vivo y un botón para cancelar. La interfaz escucha solo en
-`127.0.0.1`, así que no queda expuesta a la red.
+Sabrás que el entorno está activo porque la terminal mostrará `(venv)` al
+principio de la línea.
 
-Marca **Solo obtener enlace final** para resolver sin descargar: no hace falta
-elegir carpeta y al terminar verás los enlaces resueltos con un botón para
-copiarlos todos. Es el modo recomendado cuando el destino es una página HTML.
-
-## Uso: línea de comandos
+### 3. Instalar el navegador automatizado (recomendado)
 
 ```bash
-python3 desenlace.py "https://softurl.in/XXXX"
-python3 desenlace.py -f links.txt -o downloads
-python3 desenlace.py -f links.txt --info            # solo el enlace final
-python3 desenlace.py -f links.txt -o downloads -v   # traza de saltos
+playwright install chromium
 ```
 
-Opciones útiles: `-j N` (paralelismo), `-o CARPETA` (destino), `--force`
-(sobrescribir), `--skip-existing`, `--refresh` (ignorar caché),
-`--max-hops`, `--max-redirects`, `--max-wait`, `--wait-buffer`, `--full-chain`,
-`--auto-browser`, `--list-plugins`, `--allow-private`.
-
-Para sitios con Cloudflare o que piden sesión:
+Si el comando anterior falla, prueba:
 
 ```bash
-python3 desenlace.py --cookies cookies.txt "https://ouo.io/XXXX"
-python3 desenlace.py --user-agent "Mozilla/5.0 ..." -H "Accept-Language: es" ...
-python3 desenlace.py --retries 4 -f links.txt
+python -m playwright install chromium
 ```
 
-`--cookies` acepta el formato Netscape exportado por las extensiones del
-navegador o una línea `nombre=valor; otra=valor`. Los valores nunca se escriben
-en los logs. No subas esos archivos al repositorio: `.gitignore` y el hook
-`pre-commit` ya bloquean los volcados de cookies.
+> Este paso descarga un navegador de unos 130 MB. Solo hay que hacerlo una vez.
 
-`links.txt` admite una URL por línea (las que empiezan por `#` se ignoran).
+---
 
-## Estructura
+## Uso: Interfaz Web (recomendado)
 
-| Ruta | Contenido |
+1. Activa el entorno si no lo está:
+
+   ```bash
+   source venv/bin/activate      # Linux / macOS
+   venv\Scripts\activate         # Windows
+   ```
+
+2. Arranca la interfaz:
+
+   ```bash
+   python3 desenlace_web.py
+   ```
+
+   En Windows, si `python3` no funciona:
+
+   ```bash
+   python desenlace_web.py
+   ```
+
+3. Se abrirá tu navegador en `http://127.0.0.1:8765`. Si no se abre, copia esa
+   dirección y pégala manualmente.
+
+4. **Pega los enlaces**, uno por línea, en el cuadro de texto.
+
+5. Pulsa **Seleccionar carpeta** y elige dónde guardar los archivos.
+
+6. Elige las opciones que necesites:
+
+   | Opción | Para qué sirve |
+   | --- | --- |
+   | **Solo obtener enlace final** | No descarga nada; solo muestra los enlaces resueltos y permite copiarlos. |
+   | **Sobrescribir archivos existentes** | Reemplaza archivos con el mismo nombre. |
+   | **Usar navegador** | Fuerza el navegador automatizado desde el principio. |
+   | **Auto-navegador si falla** | Recomendado para páginas con varios pasos, esperas o verificaciones. |
+
+7. Pulsa **Descargar** (o **Obtener enlaces** si marcaste el modo de solo
+   enlace).
+
+8. Verás el progreso, el archivo actual y un registro de lo que ocurre. Puedes
+   pulsar **Cancelar** si quieres detenerlo.
+
+9. Al terminar, si usaste **Solo obtener enlace final**, aparecerá un cuadro con
+   los enlaces resueltos y el botón **Copiar todos**.
+
+### Cambiar el puerto o no abrir el navegador
+
+```bash
+python3 desenlace_web.py --port 9000
+python3 desenlace_web.py --no-browser
+```
+
+Por defecto la interfaz solo escucha en tu propio ordenador
+(`127.0.0.1`), no queda expuesta a Internet.
+
+---
+
+## Uso: Línea de comandos (CLI)
+
+La forma más rápida de resolver un enlace:
+
+```bash
+python3 desenlace.py "https://ejemplo.com/enlace-con-anuncios"
+```
+
+El archivo se guarda en la carpeta `downloads/`.
+
+### Ejemplos útiles
+
+```bash
+# Elegir la carpeta de destino
+python3 desenlace.py -o "Mis descargas" "https://ejemplo.com/enlace"
+
+# Elegir el nombre del archivo (si es un único enlace)
+python3 desenlace.py -o "pelicula.zip" "https://ejemplo.com/enlace"
+
+# Solo mostrar el enlace final, sin descargar
+python3 desenlace.py --info "https://ejemplo.com/enlace"
+
+# Resolver varios enlaces de un archivo de texto
+python3 desenlace.py -f enlaces.txt -o descargas
+
+# Descargar varios a la vez
+python3 desenlace.py -f enlaces.txt -j 4
+```
+
+### Formato de `enlaces.txt`
+
+Un enlace por línea. Las líneas que empiezan por `#` se ignoran:
+
+```text
+# Mis enlaces pendientes
+https://ejemplo.com/enlace-1
+https://ejemplo.com/enlace-2
+```
+
+### Opciones más usadas
+
+| Opción | Qué hace |
 | --- | --- |
-| `desenlace_core.py` | Tipos, helpers, parsers y validación SSRF (sin dependencias del motor) |
-| `plugins/` | Estrategias por familia de acortadores (descubrimiento automático) |
-| `plugins/download_bypasser.py` | Genera planes multi-click desde el DOM |
-| `plugins/telegram_resolver.py` | Clasifica canales/bots y plan del preview |
-| `telegram_client.py` | Integración opcional con Telethon |
-| `browser_resolver.py` | Capa anti-bot y motor de secuencias con Playwright |
-| `.env.example` | Plantilla de `TELEGRAM_API_ID/HASH/SESSION_STRING` |
-| `desenlace.py` | Motor HTTP, descarga, caché, CLI y re-exports compatibles |
-| `desenlace_web.py` | Servidor local y API de la interfaz web |
-| `index.html` | Página de la interfaz (cuadro de enlaces y progreso) |
-| `tests/` | Tests de parsers, plugins, SSRF, redirects y navegador mockeado |
+| `-o RUTA` | Carpeta o archivo de destino. |
+| `--info` | Solo muestra el enlace final; no descarga. |
+| `-f ARCHIVO` | Lee los enlaces desde un archivo de texto. |
+| `-j N` | Procesa N enlaces en paralelo. |
+| `--force` | Sobrescribe archivos existentes. |
+| `--skip-existing` | No vuelve a descargar lo que ya existe. |
+| `--auto-browser` | Usa el navegador automáticamente si la página se resiste. |
+| `--browser` | Usa el navegador desde el principio. |
+| `--cookies ARCHIVO` | Usa cookies para páginas que piden sesión. |
+| `--user-agent TEXTO` | Cambia el navegador que se anuncia al servidor. |
+| `-H "Nombre: valor"` | Añade una cabecera HTTP. |
+| `--timeout SEGUNDOS` | Tiempo máximo por petición. |
+| `--max-wait SEGUNDOS` | Tiempo máximo de espera en verificación o flujo automático. |
+| `--retries N` | Reintentos ante errores de red. |
+| `--refresh` | Ignora la caché y vuelve a resolver. |
+| `--verbose` / `-v` | Muestra más detalles del proceso. |
+| `--help` | Muestra todas las opciones disponibles. |
 
-## Tests
+> Consejo: si una página no se resuelve, prueba primero con `--auto-browser`.
+
+---
+
+## Multi-Click Bypasser: páginas con varios pasos
+
+Algunas webs no muestran el archivo hasta que haces una secuencia como:
+
+1. Pulsar **"Paso 1: Clic aquí"**.
+2. Esperar un contador de 10 segundos.
+3. Cerrar una ventana publicitaria.
+4. Pulsar **"Descargar"**.
+
+Desenlace puede hacer esos pasos por ti con el **navegador automatizado**.
+
+### En la CLI
+
+Añade `--auto-browser`:
 
 ```bash
-python3 -m pytest -q
-# o sin pytest:
-python3 -m unittest discover -s tests -v
+python3 desenlace.py --auto-browser "https://sitio-de-descarga.com/archivo"
 ```
 
-La suite incluye: fixtures HTML de cada familia, tests de plugins, SSRF
-(incluido redirect a `169.254.169.254`), límite de redirecciones, el flujo
-multi-click con popup + extracción de URL, timeout estricto y el resolver de
-canales de Telegram con Playwright simulado.
+Si quieres forzar el navegador desde el primer momento:
 
-## Notas
+```bash
+python3 desenlace.py --browser "https://sitio-de-descarga.com/archivo"
+```
 
-- No se imprimen tokens completos: los enlaces se muestran con `redact_url`.
-- El archivo se descarga primero a un `.part` y se renombra al terminar, así no
-  quedan archivos incompletos si la descarga falla o se cancela.
-- Si el destino final es una página HTML (por ejemplo un artículo), en vez de
-  fallar la descarga se guarda un acceso directo `enlace.url` con la URL
-  resuelta; `--info` la muestra directamente.
-- Las páginas con Cloudflare/captcha interactivo pueden necesitar
-  `--auto-browser` (Chromium real) o un archivo de cookies con `cf_clearance`;
-  un reto que exige interacción humana no se puede resolver sin intervención.
-- Los hosts de archivos se convierten a su enlace directo antes de resolver. Si
-  Google Drive pide confirmación para archivos grandes, el formulario oculto se
-  envía automáticamente.
-- La validación SSRF resuelve DNS antes de conectar. Es una defensa sólida
-  contra SSRF clásico y redirects maliciosos; para entornos de altísima
-  seguridad, añade además un proxy de salida con allowlist.
+### En la interfaz web
+
+Marca la casilla **Auto-navegador si falla** (o **Usar navegador** para
+forzarlo).
+
+### Qué esperar
+
+- Pueden abrirse y cerrarse pestañas automáticamente.
+- Las esperas de la página se aceleran.
+- No toques el navegador mientras trabaja.
+- Si tarda demasiado, aumenta el límite:
+
+  ```bash
+  python3 desenlace.py --auto-browser --max-wait 180 "https://sitio.com/archivo"
+  ```
+
+- Si sigue fallando, prueba con cookies:
+
+  ```bash
+  python3 desenlace.py --auto-browser --cookies cookies.txt "https://sitio.com/archivo"
+  ```
+
+> Los captchas que exigen que una persona resuelva un puzzle no se pueden
+> saltar automáticamente. En esos casos necesitas usar una sesión válida con
+> `--cookies` o resolverlo manualmente.
+
+---
+
+## Telegram Resolver
+
+Puedes pegar enlaces de Telegram igual que cualquier otro enlace.
+
+### Canales públicos
+
+Enlaces como:
+
+```text
+https://t.me/nombre_del_canal/123
+https://t.me/s/nombre_del_canal
+```
+
+```bash
+python3 desenlace.py --auto-browser "https://t.me/nombre_del_canal/123"
+```
+
+El navegador abrirá la versión pública del canal y extraerá el archivo, vídeo o
+audio disponible.
+
+### Bots de Telegram
+
+Enlaces como:
+
+```text
+https://t.me/NombreDelBot?start=abc123
+```
+
+Para estos enlaces necesitas configurar una sesión de Telegram. Solo hay que
+hacerlo una vez.
+
+#### 1. Copia el archivo de configuración
+
+**Linux o macOS:**
+
+```bash
+cp .env.example .env
+```
+
+**Windows:**
+
+```bash
+copy .env.example .env
+```
+
+#### 2. Rellena tus datos
+
+Abre `.env` con un editor de texto y sustituye los valores de ejemplo:
+
+```text
+TELEGRAM_API_ID=<TU_API_ID_AQUI>
+TELEGRAM_API_HASH=<TU_API_HASH_AQUI>
+TELEGRAM_SESSION_STRING=<TU_SESSION_STRING_AQUI>
+```
+
+No escribas estos datos en el README, en capturas ni en mensajes. Son privados.
+
+#### 3. Obtén `API_ID` y `API_HASH`
+
+1. Entra en <https://my.telegram.org>.
+2. Inicia sesión con tu cuenta de Telegram.
+3. Abre **API development tools**.
+4. Crea una aplicación si no tienes una.
+5. Copia el **App api_id** y el **App api_hash** en tu `.env`.
+
+#### 4. Genera la sesión
+
+Crea un archivo llamado `generar_sesion.py` con este contenido (sustituye los
+placeholders por tus datos):
+
+```python
+from telethon.sync import TelegramClient
+from telethon.sessions import StringSession
+
+API_ID = <TU_API_ID_AQUI>
+API_HASH = "<TU_API_HASH_AQUI>"
+
+with TelegramClient(StringSession(), API_ID, API_HASH) as cliente:
+    print(cliente.session.save())
+```
+
+Ejecútalo:
+
+```bash
+python generar_sesion.py
+```
+
+Te pedirá el teléfono y el código que recibirás en Telegram. Al terminar,
+imprimirá una cadena larga. Cópiala en `TELEGRAM_SESSION_STRING` dentro de tu
+`.env`.
+
+#### 5. Usa el enlace del bot
+
+```bash
+python3 desenlace.py --auto-browser "https://t.me/NombreDelBot?start=abc123"
+```
+
+También puedes pegarlo en la interfaz web con **Auto-navegador si falla**
+marcado.
+
+#### Si algo no funciona
+
+- **"Telegram no está configurado"**: revisa que `.env` exista y tenga los tres
+  valores rellenos.
+- **"La sesión no está autorizada"**: vuelve a generar `TELEGRAM_SESSION_STRING`.
+- **El bot no responde**: comprueba el nombre del bot y que el enlace sea
+  correcto.
+- **No quiero configurar Telegram**: los canales públicos siguen funcionando;
+  solo los bots necesitan esta configuración.
+
+> Nunca subas tu archivo `.env` a GitHub ni lo compartas. El proyecto ya lo
+> ignora por defecto.
+
+---
+
+## Problemas frecuentes
+
+### "No se reconoce la página"
+
+Prueba con el navegador:
+
+```bash
+python3 desenlace.py --auto-browser --verbose "https://ejemplo.com/enlace"
+```
+
+### La página pide Cloudflare o "No soy un robot"
+
+Usa `--auto-browser`. Si el reto sigue apareciendo, espera un rato, prueba desde
+otra red o usa cookies de una sesión válida:
+
+```bash
+python3 desenlace.py --auto-browser --cookies cookies.txt "https://ejemplo.com/enlace"
+```
+
+### `playwright: command not found`
+
+Activa el entorno y vuelve a instalar el navegador:
+
+```bash
+source venv/bin/activate      # Linux / macOS
+venv\Scripts\activate         # Windows
+python -m playwright install chromium
+```
+
+En Linux, si faltan librerías del sistema:
+
+```bash
+python -m playwright install-deps chromium
+```
+
+### Se ha guardado un archivo `enlace.url` en vez del archivo
+
+Significa que el destino final es una página web, no un archivo. Usa `--info`
+para ver el enlace, o revisa que el enlace de origen sea el correcto.
+
+### El archivo descargado no tiene extensión
+
+La herramienta intenta deducirla del servidor. Si no puede, puedes renombrarlo
+manualmente.
+
+### No tengo permisos para guardar en esa carpeta
+
+Elige otra carpeta, por ejemplo tu carpeta de Descargas o `downloads`.
+
+### Windows no reconoce `python`
+
+Vuelve a instalar Python marcando **"Add Python to PATH"**, o usa `py` en lugar
+de `python`.
+
+### Por seguridad no descarga una dirección local
+
+La herramienta bloquea direcciones locales y privadas para evitar usos
+peligrosos. Es el comportamiento esperado.
+
+---
+
+## Privacidad y seguridad
+
+- Los tokens, cookies y sesiones **no se muestran** en los mensajes de la
+  herramienta.
+- No compartas tu archivo `.env`, tus cookies ni tu sesión de Telegram.
+- Usa la herramienta solo con contenido que tengas derecho a descargar.
+- La interfaz web escucha únicamente en tu ordenador.
+
+---
+
+## Actualizar la herramienta
+
+Si instalaste con `git`:
+
+```bash
+git pull
+pip install -r requirements.txt
+playwright install chromium
+```
+
+---
+
+## Repositorio
+
+<https://github.com/mariomartinezregidor/Desenlace>
+
+Si encuentras un problema, abre una incidencia en GitHub indicando:
+
+- El enlace que falla (si no contiene datos privados).
+- El mensaje de error.
+- Tu sistema operativo.
