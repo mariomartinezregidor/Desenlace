@@ -591,6 +591,20 @@ class BrowserResolver:
     ) -> Any | None:
         """Busca un botón/enlace visible por su texto, sin depender de id/clase."""
         exclude = exclude or set()
+        
+        # Buscar PRIMERO por ID conocidos
+        try:
+            main_btn = page.locator("#mainButton")
+            if main_btn.count() > 0:
+                try:
+                    if main_btn.first.is_visible(timeout=500):
+                        self._log(f"Botón encontrado por ID: #mainButton")
+                        return main_btn.first
+                except:
+                    pass
+        except:
+            pass
+        
         candidatos = (
             "a, button, input[type=submit], input[type=button], [role=button], div[onclick]"
         )
@@ -619,6 +633,16 @@ class BrowserResolver:
                         texto = item.get_attribute("aria-label") or ""
                     except Exception:
                         texto = ""
+                
+                # Si aún no hay texto, intentar obtener HTML interno
+                if not texto:
+                    try:
+                        html = item.inner_html()
+                        if "download" in html.lower() or "descarga" in html.lower():
+                            texto = html[:100]
+                    except:
+                        pass
+                
                 low = re.sub(r"\s+", " ", texto.strip().lower())
                 if not low or low in exclude:
                     continue
