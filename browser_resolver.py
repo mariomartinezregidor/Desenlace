@@ -592,7 +592,7 @@ class BrowserResolver:
         """Busca un botón/enlace visible por su texto, sin depender de id/clase."""
         exclude = exclude or set()
         candidatos = (
-            "a, button, input[type=submit], input[type=button], [role=button]"
+            "a, button, input[type=submit], input[type=button], [role=button], div[onclick]"
         )
         try:
             items = page.locator(candidatos)
@@ -612,6 +612,11 @@ class BrowserResolver:
                 if not texto:
                     try:
                         texto = item.get_attribute("value") or ""
+                    except Exception:
+                        texto = ""
+                if not texto:
+                    try:
+                        texto = item.get_attribute("aria-label") or ""
                     except Exception:
                         texto = ""
                 low = re.sub(r"\s+", " ", texto.strip().lower())
@@ -676,16 +681,29 @@ class BrowserResolver:
                 return False
         except Exception:
             pass
-        for accion in ("normal", "force", "js"):
+        
+        # Estrategia de clic: normal -> force -> scroll+click -> js directo
+        for accion in ("normal", "force", "scroll", "js"):
             try:
                 if accion == "normal":
                     locator.click(timeout=3000)
                 elif accion == "force":
                     locator.click(timeout=3000, force=True)
-                else:
-                    locator.evaluate("el => el.click()")
+                elif accion == "scroll":
+                    # Scroll al elemento + clic
+                    locator.scroll_into_view_if_needed()
+                    time.sleep(0.5)
+                    locator.click(timeout=3000, force=True)
+                else:  # js
+                    # Clic JavaScript puro + dispara eventos
+                    locator.evaluate("""el => {
+                        el.click();
+                        el.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+                        el.dispatchEvent(new Event('change', {bubbles: true}));
+                    }""")
                 return True
-            except Exception:
+            except Exception as e:
+                self._log(f"Clic {accion} falló: {str(e)[:40]}")
                 continue
         return False
 
@@ -749,75 +767,167 @@ class BrowserResolver:
         outcome: "BrowserOutcome",
         max_iterations: int = 50,
     ) -> None:
-        """Recorre un laberinto de popups, captchas y botones hasta el archivo."""
-        deadline = time.monotonic() + min(self.max_sequence_seconds, 120.0)
-        vistos: set[str] = set()
-        for iteration in range(1, max_iterations + 1):
-            if time.monotonic() >= deadline:
+        """Laberinto inteligente: vuelve atrás si detecta página bloqueada y reintenta."""
+        deadline = time.monotonic() + min(self.max_sequence_seconds, 600.0)
+        historial_urls: list[str] = []
+        botones_intentados: set[str] = set()
+        
+        iteration = 0
+        while iteration < max_iterations:
+            iteration += 1
+            elapsed = time.monotonic() - (deadline - min(self.max_sequence_seconds, 600.0))
+            remaining = min(self.max_sequence_seconds, 600.0) - elapsed
+            
+            if remaining <= 0:
                 outcome.timed_out = True
-                self._log("laberinto: tiempo máximo agotado")
+                self._log(f"[MAZE] Timeout global ({elapsed:.1f}s)")
                 break
+            
             if download_holder.get("download") is not None:
+                self._log(f"[MAZE] OK Descarga capturada en iteración {iteration}")
                 break
-
+            
+            # PASO 1: Limpiar y detectar página bloqueada
+            self._log(f"[MAZE-{iteration}] Limpiando overlays...")
+            self._remove_blocking_overlays(page)
             self._close_popups(context, page)
+            
+            url_actual = getattr(page, "url", "") or ""
+            
+            # Si estamos en página bloqueada (cam4, adult, etc), volver atrás
+            blocked = ('cam4', 'adult', 'sex', 'porn', 'dating', 'xnxx')
+            if any(b in url_actual.lower() for b in blocked):
+                self._log(f"[MAZE-{iteration}] BLOQUEADA: {url_actual[:60]}")
+                self._log(f"[MAZE-{iteration}] Volviendo atras...")
+                
+                # Volver atrás hasta encontrar la página "buena"
+                intentos_back = 0
+                while intentos_back < 5:
+                    try:
+                        page.go_back(wait_until='domcontentloaded', timeout=5000)
+                        time.sleep(1)
+                        new_url = getattr(page, "url", "") or ""
+                        self._log(f"[MAZE-{iteration}] Back #{intentos_back+1}: {new_url[:60]}")
+                        
+                        # Si salimos de la zona bloqueada, continuar
+                        if not any(b in new_url.lower() for b in blocked):
+                            self._log(f"[MAZE-{iteration}] OK Escapamos de la pagina bloqueada")
+                            url_actual = new_url
+                            break
+                        intentos_back += 1
+                    except Exception as e:
+                        self._log(f"[MAZE-{iteration}] Error en back: {str(e)[:40]}")
+                        break
+                
+                # Si seguimos bloqueados, abortar
+                if any(b in url_actual.lower() for b in blocked):
+                    self._log(f"[MAZE-{iteration}] No pudimos escapar de la pagina bloqueada")
+                    break
+            
+            historial_urls.append(url_actual)
+            
+            # PASO 2: Resolver captchas
             if self._page_has_challenge(page):
-                self._log("laberinto: captcha detectado")
+                self._log(f"[MAZE-{iteration}] Resolviendo captcha...")
                 self._click_verification(page)
                 self._wait(page)
-
+            
+            # PASO 3: Esperar carga
             try:
-                page.wait_for_load_state("networkidle", timeout=5000)
+                page.wait_for_load_state("networkidle", timeout=15000)
             except Exception:
                 pass
+            
             if download_holder.get("download") is not None:
                 break
-
+            
+            # PASO 4: Detectar si llegamos al archivo
             url_actual = getattr(page, "url", "") or ""
             if self._is_file_url(url_actual):
                 outcome.extracted_url = url_actual
-                self._log(f"laberinto: archivo detectado -> {url_actual[:120]}")
+                self._log(f"[MAZE-{iteration}] OK Archivo detectado: {url_actual[:80]}")
                 break
+            
             enlace = self._find_txt_link(page)
             if enlace:
                 outcome.extracted_url = enlace
+                self._log(f"[MAZE-{iteration}] OK Enlace .txt encontrado")
                 break
-
-            self._log(f"laberinto: iteración {iteration}, buscando botón…")
+            
+            # PASO 5: Buscar botón
+            self._log(f"[MAZE-{iteration}] ({remaining:.0f}s) Buscando boton...")
             boton = self._find_text_button(page)
+            
             if boton is None:
+                self._log(f"[MAZE-{iteration}] Esperando 2s a que aparezca boton...")
                 try:
-                    page.wait_for_timeout(1200)
+                    page.wait_for_timeout(2000)
                 except Exception:
-                    time.sleep(1.2)
+                    time.sleep(2)
                 boton = self._find_text_button(page)
-            if boton is None:
-                self._log("laberinto: no hay más botones")
-                break
-
-            antes = getattr(page, "url", "") or ""
-            if not self._click_locator(page, boton):
-                self._log("laberinto: no se pudo pulsar el botón")
-                break
-            self._wait(page)
-            despues = getattr(page, "url", "") or ""
-            if despues == antes:
-                # El clic no navegó: esperar y reintentar una vez más.
+                
+                if boton is None:
+                    self._log(f"[MAZE-{iteration}] No hay boton disponible")
+                    break
+            
+            # PASO 6: Obtener info del botón
+            try:
+                texto_btn = boton.inner_text(timeout=300).strip()[:60]
+            except:
+                texto_btn = "?"
+            
+            # Si ya intentamos este botón antes, saltar
+            btn_hash = f"{url_actual}:{texto_btn}"
+            if btn_hash in botones_intentados:
+                self._log(f"[MAZE-{iteration}] Boton ya intentado, buscando otro...")
+                continue
+            
+            botones_intentados.add(btn_hash)
+            
+            # PASO 7: Clic con reintentos
+            self._log(f"[MAZE-{iteration}] Pulsando: {texto_btn[:40]}")
+            
+            url_antes = url_actual
+            clic_exitoso = False
+            
+            for intento_clic in range(1, 4):  # 3 intentos
                 try:
-                    page.wait_for_timeout(1500)
-                except Exception:
-                    time.sleep(1.5)
-                if download_holder.get("download") is None:
-                    otro = self._find_text_button(page, exclude=vistos)
-                    if otro is not None and self._click_locator(page, otro):
+                    if self._click_locator(page, boton):
                         self._wait(page)
-            vistos.add(despues)
-            if despues in vistos and iteration > 3 and despues == antes:
-                self._log("laberinto: sin avance, se detiene")
-                break
-
+                        
+                        # Cerrar popups que se abran
+                        self._close_popups(context, page)
+                        
+                        # Esperar a estabilización
+                        try:
+                            page.wait_for_load_state("networkidle", timeout=8000)
+                        except Exception:
+                            pass
+                        
+                        # Checar si hubo navegación
+                        url_despues = getattr(page, "url", "") or ""
+                        if url_despues != url_antes:
+                            self._log(f"[MAZE-{iteration}] OK Navegacion #{intento_clic}: {url_despues[:60]}")
+                            clic_exitoso = True
+                            break
+                        else:
+                            self._log(f"[MAZE-{iteration}] RETRY Sin progreso, reintentando...")
+                            time.sleep(1)
+                except Exception as e:
+                    err_msg = str(e)[:50]
+                    self._log(f"[MAZE-{iteration}] Error #{intento_clic}: {err_msg}")
+                    if "context" in err_msg.lower():
+                        time.sleep(2)
+                    continue
+            
+            if not clic_exitoso:
+                self._log(f"[MAZE-{iteration}] No se pudo hacer clic exitoso")
+                # Intentar con otro botón en siguiente iteración
+                continue
+        
         if time.monotonic() >= deadline:
             outcome.timed_out = True
+            self._log(f"[MAZE] Timeout - {iteration}/{max_iterations} iteraciones")
 
     def _solve_challenge(self, page: Any, deadline: float) -> bool:
         """Resuelve el captcha de ICutLink ("Selecciona el número N").
