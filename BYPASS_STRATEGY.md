@@ -4,6 +4,16 @@
 
 Este documento describe la estrategia implementada en `browser_resolver.py` para resolver **laberintos profundos de descarga con publicidad agresiva**, donde los botones de descarga están ocultos detrás de múltiples capas de engaño.
 
+**Versión Actual**: **Stealth Autonomous Maze Bot v2** (50 iteraciones, máquina de estados, intercepción de red)
+
+### Cambios Principales (Commit: `47de9ad`)
+- **Playwright-Stealth**: Masking de `navigator.webdriver` para evasión de detección de bots
+- **50 iteraciones** en lugar de 200: Cada iteración es más inteligente
+- **Máquina de estados**: 7 pasos por iteración (popup → overlay → captcha → intercept → click → bait-detect → back)
+- **Intercepción pasiva de red**: Captura URLs `.txt` en segundo plano sin necesidad de botón visible
+- **Timeout extendido**: 40 minutos (2400s) para laberintos de hasta 20+ websites encadenadas
+- **Detección de trampas**: Identifica botones cebo (sin progreso en URL) y usa `go_back()` automático
+
 ## Patrón Detectado
 
 El patrón típico es:
@@ -14,7 +24,96 @@ El patrón típico es:
 5. **Ahora aparece el botón REAL**: "Descarga Directa", "Download", o un enlace `.txt`
 6. **Descarga**: Se obtiene el archivo con credenciales
 
-## Implementación: Secuencia "BAIT-AND-BACK"
+---
+
+## Bot Autónomo Stealth: Máquina de Estados (v2)
+
+### Arquitectura General
+
+El bot implementa una **máquina de estados de 50 iteraciones** con 7 pasos por ciclo:
+
+```
+┌─────────────────────────────────────────────────────┐
+│ ITERACIÓN N (máx 50)                                │
+├─────────────────────────────────────────────────────┤
+│ [1] CERRAR POPUPS                                   │
+│     └─> page.context.pages[i].close()               │
+│                                                     │
+│ [2] ELIMINAR OVERLAYS                               │
+│     └─> page.evaluate(remove_fixed_divs)            │
+│                                                     │
+│ [3] RESOLVER CAPTCHAS                               │
+│     └─> Detecta iframe[recaptcha]                   │
+│     └─> Pausa 30s para resolución manual            │
+│                                                     │
+│ [4] INTERCEPTAR DESCARGAS EN BACKGROUND             │
+│     └─> page.on("response") escucha .txt            │
+│     └─> Captura URLs sin necesidad de botón        │
+│                                                     │
+│ [5] BUSCAR Y HACER CLIC EN BOTÓN                    │
+│     └─> _find_text_button() → locator().click()    │
+│     └─> force=True para forzar clic                 │
+│                                                     │
+│ [6] ESPERAR NAVEGACIÓN (2s + networkidle)           │
+│     └─> Verifica si URL cambió                      │
+│                                                     │
+│ [7] DETECTAR TRAMPA (BOTÓN CEBO)                    │
+│     └─> Si URL no cambió, stuck_counter++           │
+│     └─> Si stuck_counter > 2 → page.go_back()      │
+│                                                     │
+└─────────────────────────────────────────────────────┘
+      ↓
+   ¿Timeout? ¿Descarga encontrada? → FIN
+      ↓
+   SIGUIENTE ITERACIÓN
+```
+
+### Parámetros Clave
+
+| Parámetro | Valor | Descripción |
+|-----------|-------|-------------|
+| `max_iterations` | 50 | Máximo de ciclos (ajustable) |
+| `max_sequence_seconds` | 2400 (40 min) | Timeout global |
+| `stuck_counter_limit` | 2 | Intentos antes de go_back() |
+| `captcha_pause` | 30s | Espera para resolver captcha manual |
+| `network_timeout` | 8s | Espera después de clic |
+
+### Flujo de Control
+
+```python
+# En resolve() - aplicar stealth mode
+stealth_sync(context)  # Enmascara navigator.webdriver
+
+# En _run_maze() - bucle principal
+iteration = 0
+while iteration < 50:
+    # Pasos 1-7 aquí
+    # Si outcome.extracted_url → ROMPER
+    # Si timeout → ROMPER
+```
+
+### Intercepción de Red (Clave Diferencial)
+
+La intercepción pasiva captura descargas **sin necesidad de un botón visible**:
+
+```python
+def on_response(response):
+    url = response.url
+    content_type = response.headers.get("content-type", "")
+    
+    # Detectar descarga en segundo plano
+    if (".txt" in url.lower() or 
+        "text/plain" in content_type or
+        "application/octet-stream" in content_type):
+        
+        outcome.extracted_url = url  # ← CAPTURAR INMEDIATAMENTE
+```
+
+**Ventaja**: Muchas webs disparan descargas vía AJAX sin botón visible. Este listener las captura automáticamente.
+
+---
+
+## Implementación: Secuencia "BAIT-AND-BACK" (Legado)
 
 ### Funciones Principales
 
