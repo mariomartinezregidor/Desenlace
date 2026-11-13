@@ -646,33 +646,41 @@ class BrowserResolver:
         try:
             removed = page.evaluate("""() => {
                 let count = 0;
-                document.querySelectorAll('*').forEach(el => {
-                    const style = window.getComputedStyle(el);
-                    const z = parseInt(style.zIndex) || 0;
-                    const p = style.position;
-                    if ((z > 50 || p === 'fixed') && el.offsetHeight > 0 && el.offsetWidth > 0) {
-                        const r = el.getBoundingClientRect();
-                        if (r.width > window.innerWidth * 0.3 && r.height > window.innerHeight * 0.2) {
+                try {
+                    document.querySelectorAll('*').forEach(el => {
+                        const style = window.getComputedStyle(el);
+                        const z = parseInt(style.zIndex) || 0;
+                        const p = style.position;
+                        if ((z > 50 || p === 'fixed') && el.offsetHeight > 0 && el.offsetWidth > 0) {
+                            const r = el.getBoundingClientRect();
+                            if (r.width > window.innerWidth * 0.3 && r.height > window.innerHeight * 0.2) {
+                                try { el.remove(); count++; } catch(e) {}
+                            }
+                        }
+                    });
+                } catch(e) {}
+                try {
+                    document.querySelectorAll('iframe').forEach(el => {
+                        const s = (el.src || '').toLowerCase();
+                        const i = (el.id || '').toLowerCase();
+                        if (s.includes('ad') || s.includes('banner') || i.includes('ad') || i.includes('popup')) {
                             try { el.remove(); count++; } catch(e) {}
                         }
-                    }
-                });
-                document.querySelectorAll('iframe').forEach(el => {
-                    const s = (el.src || '').toLowerCase();
-                    const i = (el.id || '').toLowerCase();
-                    if (s.includes('ad') || s.includes('banner') || i.includes('ad') || i.includes('popup')) {
-                        try { el.remove(); count++; } catch(e) {}
-                    }
-                });
-                document.querySelectorAll('[class*="ad"], [class*="popup"], [class*="modal"]').forEach(el => {
-                    if (el.offsetHeight > 50) try { el.remove(); count++; } catch(e) {}
-                });
+                    });
+                } catch(e) {}
+                try {
+                    document.querySelectorAll('[class*="ad"], [class*="popup"], [class*="modal"]').forEach(el => {
+                        if (el.offsetHeight > 50) try { el.remove(); count++; } catch(e) {}
+                    });
+                } catch(e) {}
                 return count;
             }""")
             if removed > 0:
                 self._log(f"[AD-KILLER] Removidos {removed} overlays")
         except Exception as e:
-            self._log(f"[AD-KILLER] Error: {str(e)[:50]}")
+            # Context destroyed es normal durante navegación - no loguear
+            if "context" not in str(e).lower():
+                self._log(f"[AD-KILLER] Error: {str(e)[:50]}")
 
     def _click_locator(self, page: Any, locator: Any) -> bool:
         self._remove_blocking_overlays(page)
@@ -682,28 +690,33 @@ class BrowserResolver:
         except Exception:
             pass
         
-        # Estrategia de clic: normal -> force -> scroll+click -> js directo
-        for accion in ("normal", "force", "scroll", "js"):
+        # Estrategia de clic: scroll -> normal -> force -> js directo
+        for accion in ("scroll", "normal", "force", "js"):
             try:
-                if accion == "normal":
+                if accion == "scroll":
+                    # Scroll + pausa antes de clic
+                    try:
+                        locator.scroll_into_view_if_needed()
+                    except:
+                        pass
+                    time.sleep(0.3)
+                    locator.click(timeout=3000)
+                elif accion == "normal":
                     locator.click(timeout=3000)
                 elif accion == "force":
                     locator.click(timeout=3000, force=True)
-                elif accion == "scroll":
-                    # Scroll al elemento + clic
-                    locator.scroll_into_view_if_needed()
-                    time.sleep(0.5)
-                    locator.click(timeout=3000, force=True)
                 else:  # js
-                    # Clic JavaScript puro + dispara eventos
-                    locator.evaluate("""el => {
-                        el.click();
-                        el.dispatchEvent(new MouseEvent('click', {bubbles: true}));
-                        el.dispatchEvent(new Event('change', {bubbles: true}));
+                    # Clic JavaScript puro
+                    page.evaluate("""() => {
+                        const el = document.querySelector('[role=button], button, a');
+                        if (el) el.click();
                     }""")
                 return True
             except Exception as e:
-                self._log(f"Clic {accion} falló: {str(e)[:40]}")
+                err_str = str(e)
+                # Contexto destruido es normal, no loguear
+                if "context" not in err_str.lower():
+                    self._log(f"Clic {accion} falló: {err_str[:30]}")
                 continue
         return False
 
@@ -765,18 +778,18 @@ class BrowserResolver:
         context: Any,
         download_holder: dict[str, Any],
         outcome: "BrowserOutcome",
-        max_iterations: int = 50,
+        max_iterations: int = 200,
     ) -> None:
-        """Laberinto inteligente: vuelve atrás si detecta página bloqueada y reintenta."""
-        deadline = time.monotonic() + min(self.max_sequence_seconds, 600.0)
+        """Laberinto profundo: persistente a través de múltiples páginas hasta el .txt."""
+        deadline = time.monotonic() + min(self.max_sequence_seconds, 1200.0)
         historial_urls: list[str] = []
         botones_intentados: set[str] = set()
         
         iteration = 0
         while iteration < max_iterations:
             iteration += 1
-            elapsed = time.monotonic() - (deadline - min(self.max_sequence_seconds, 600.0))
-            remaining = min(self.max_sequence_seconds, 600.0) - elapsed
+            elapsed = time.monotonic() - (deadline - min(self.max_sequence_seconds, 1200.0))
+            remaining = min(self.max_sequence_seconds, 1200.0) - elapsed
             
             if remaining <= 0:
                 outcome.timed_out = True
@@ -876,10 +889,12 @@ class BrowserResolver:
             except:
                 texto_btn = "?"
             
-            # Si ya intentamos este botón antes, saltar
+            # Si ya intentamos este botón en ESTA página, buscar otro
+            # Pero permitir reintentar en próxima iteración si es diferente URL
             btn_hash = f"{url_actual}:{texto_btn}"
-            if btn_hash in botones_intentados:
-                self._log(f"[MAZE-{iteration}] Boton ya intentado, buscando otro...")
+            botones_en_pagina_actual = [b for b in botones_intentados if b.startswith(url_actual)]
+            if btn_hash in botones_intentados and len(botones_en_pagina_actual) > 2:
+                self._log(f"[MAZE-{iteration}] Botón ya intentado múltiples veces, buscando otro...")
                 continue
             
             botones_intentados.add(btn_hash)
@@ -921,8 +936,9 @@ class BrowserResolver:
                     continue
             
             if not clic_exitoso:
-                self._log(f"[MAZE-{iteration}] No se pudo hacer clic exitoso")
-                # Intentar con otro botón en siguiente iteración
+                self._log(f"[MAZE-{iteration}] Clic no fue exitoso, continuando...")
+                # Continuar intentando otras estrategias en siguiente iteración
+                # No rendirse - podría haber otro botón o contenido que cargue
                 continue
         
         if time.monotonic() >= deadline:
