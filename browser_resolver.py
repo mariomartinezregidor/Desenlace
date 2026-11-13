@@ -8,6 +8,8 @@ las cookies de la sesión y, si hubo descarga, el archivo guardado.
 
 from __future__ import annotations
 
+import random
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -61,6 +63,16 @@ CHALLENGE_SELECTORS = (
     "input[name='cf-turnstile-response']",
 )
 
+# Cabeceras para que las webs no detecten Chromium headless y devuelvan HTML
+# vacío. `sec-ch-ua` es la que delata "HeadlessChrome". También se evita zstd,
+# que algunas compilaciones de Chromium no decodifican y dejan la página vacía.
+HEADLESS_MASK_HEADERS = {
+    "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24", "Google Chrome";v="131"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Linux"',
+    "Accept-Encoding": "gzip, deflate, br",
+}
+
 CLICK_SELECTORS = (
     "#robot-check",
     "#recaptcha-anchor",
@@ -73,6 +85,30 @@ CLICK_SELECTORS = (
     "button:has-text('Continuar')",
     "#challenge-form button[type='submit']",
     "#challenge-stage input[type='submit']",
+)
+
+BUTTON_KEYWORDS = (
+    "descarga directa",
+    "descargar",
+    "download",
+    "continuar",
+    "continue",
+    "ir a la descarga",
+    "go to download",
+    "get link",
+    "obtener enlace",
+    "generar enlace",
+    "saltar",
+    "skip",
+    "no soy un robot",
+    "verificar",
+    "verify",
+    "acceder",
+    "abrir enlace",
+    "click aquí",
+    "clic aquí",
+    "click here",
+    "proceed",
 )
 
 CAPTCHA_FRAMES = (
@@ -146,7 +182,8 @@ EXTRACT_URL_JS = """
                   (el.textContent || "")).toLowerCase();
     let value = 0;
     ["download", "descargar", "getlink", "get link", "continuar",
-     "continue", "archivo", "file"].forEach((word) => {
+     "continue", "next", "siguiente", "paso", "step", "archivo", "file"
+    ].forEach((word) => {
       if (text.includes(word)) value += 1;
     });
     if (el.hasAttribute("download")) value += 4;
@@ -248,6 +285,9 @@ class BrowserResolver:
         poll_interval: float = 0.5,
         allow_private: bool = False,
         max_sequence_seconds: float = 120.0,
+        maze: bool = False,
+        debug: bool = False,
+        slow_mo: int | None = None,
     ) -> None:
         self.timeout = timeout
         self.max_wait = max_wait
@@ -259,10 +299,13 @@ class BrowserResolver:
         self.cookies = cookies
         self.poll_interval = max(0.1, poll_interval)
         self.allow_private = allow_private
+        self.maze = maze
+        self.debug = debug
+        self.slow_mo = slow_mo
 
     # -- helpers ---------------------------------------------------------
     def _log(self, message: str) -> None:
-        if not self.verbose:
+        if not (self.verbose or self.debug):
             return
         print(f"[browser] {message}", file=sys.stderr, flush=True)
 
@@ -416,7 +459,15 @@ class BrowserResolver:
                 return False
             if not locator.is_visible(timeout=min(1000, timeout_ms)):
                 return False
-            locator.click(timeout=timeout_ms)
+            try:
+                locator.click(timeout=timeout_ms)
+            except Exception:
+                try:
+                    # Overlays/publicidad a veces interceptan el clic.
+                    locator.click(timeout=timeout_ms, force=True)
+                except Exception:
+                    # Último recurso: click() nativo del DOM (burbujea igual).
+                    locator.evaluate("el => el.click()")
             self._log(f"clic en {action.selector or action.text}")
             return True
         except Exception as exc:
@@ -460,6 +511,17 @@ class BrowserResolver:
         if not isinstance(result, dict):
             return None
         if result.get("form"):
+            try:
+                action = page.evaluate(
+                    "() => document.querySelector('form[action]')?.getAttribute('action') || ''"
+                )
+            except Exception:
+                action = ""
+            # Los formularios de WordPress (comentarios) son un falso positivo:
+            # enviarlos no lleva al archivo y rompe el flujo del anuncio.
+            if "wp-" in (action or "").lower():
+                self._log(f"formulario WP ignorado: {action}")
+                return None
             self._log("formulario de descarga detectado; enviando…")
             try:
                 page.evaluate(
@@ -480,7 +542,306 @@ class BrowserResolver:
         if not is_plausible_url(url):
             self._log(f"URL descartada (parece un recurso): {url}")
             return None
+        if "wp-" in url.lower():
+            self._log(f"URL WP descartada: {url}")
+            return None
         return url
+
+    def _page_text(self, page: Any) -> str:
+        try:
+            return page.inner_text("body") or ""
+        except Exception:
+            try:
+                return page.content() or ""
+            except Exception:
+                return ""
+
+    def _close_popups(self, context: Any, page: Any) -> int:
+        """Cierra todas las pestañas emergentes y devuelve el foco a `page`."""
+        closed = 0
+        try:
+            pages = list(context.pages)
+        except Exception:
+            return 0
+        for candidate in pages:
+            if candidate is page:
+                continue
+            try:
+                candidate.close()
+                closed += 1
+            except Exception:
+                pass
+        if closed:
+            self._log(f"Cerradas {closed} pestaña(s) de publicidad")
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+        return closed
+
+    def _find_text_button(
+        self, page: Any, exclude: set[str] | None = None
+    ) -> Any | None:
+        """Busca un botón/enlace visible por su texto, sin depender de id/clase."""
+        exclude = exclude or set()
+        candidatos = (
+            "a, button, input[type=submit], input[type=button], [role=button]"
+        )
+        try:
+            items = page.locator(candidatos)
+            total = items.count()
+            for index in range(min(total, 200)):
+                item = items.nth(index)
+                try:
+                    if not item.is_visible(timeout=200):
+                        continue
+                except Exception:
+                    continue
+                texto = ""
+                try:
+                    texto = item.inner_text() or ""
+                except Exception:
+                    texto = ""
+                if not texto:
+                    try:
+                        texto = item.get_attribute("value") or ""
+                    except Exception:
+                        texto = ""
+                low = re.sub(r"\s+", " ", texto.strip().lower())
+                if not low or low in exclude:
+                    continue
+                if any(keyword in low for keyword in BUTTON_KEYWORDS):
+                    self._log(f"Botón por texto: {texto.strip()[:60]!r}")
+                    return item
+        except Exception:
+            pass
+        # Fallback para dobles de test o páginas sin locator() completo.
+        for keyword in BUTTON_KEYWORDS:
+            if keyword in exclude:
+                continue
+            for texto in (keyword, keyword.capitalize()):
+                try:
+                    loc = page.get_by_text(texto, exact=False).first
+                    if loc.is_visible(timeout=200):
+                        self._log(f"Botón por texto (get_by_text): {texto!r}")
+                        return loc
+                except Exception:
+                    continue
+        return None
+
+    def _click_locator(self, page: Any, locator: Any) -> bool:
+        try:
+            if not locator.is_visible(timeout=500):
+                return False
+        except Exception:
+            pass
+        for accion in ("normal", "force", "js"):
+            try:
+                if accion == "normal":
+                    locator.click(timeout=3000)
+                elif accion == "force":
+                    locator.click(timeout=3000, force=True)
+                else:
+                    locator.evaluate("el => el.click()")
+                return True
+            except Exception:
+                continue
+        return False
+
+    def _find_txt_link(self, page: Any) -> str | None:
+        """Busca un enlace directo a un .txt o a un host de archivos."""
+        script = """() => {
+            const anchors = Array.from(document.querySelectorAll('a[href]'));
+            for (const a of anchors) {
+                const href = a.href || '';
+                const text = (a.textContent || '').toLowerCase();
+                if (/\\.txt(\\?|$)/i.test(href) ||
+                    /mediafire|pixeldrain|mega\\.nz|drive\\.google/i.test(href) ||
+                    /descargar|download|enlace directo/i.test(text)) {
+                    return href;
+                }
+            }
+            return '';
+        }"""
+        try:
+            value = page.evaluate(script)
+            if isinstance(value, str) and value.startswith(("http://", "https://")):
+                self._log(f"Enlace de descarga encontrado: {value[:120]}")
+                return value
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _is_file_url(url: str) -> bool:
+        low = (url or "").lower()
+        return bool(
+            re.search(r"\.(txt|zip|rar|7z|pdf|apk|exe|mp4|mkv|mp3)(\?|$)", low)
+            or "mediafire.com/file/" in low
+            or "pixeldrain.com" in low
+        )
+
+    def _run_maze(
+        self,
+        page: Any,
+        context: Any,
+        download_holder: dict[str, Any],
+        outcome: "BrowserOutcome",
+        max_iterations: int = 10,
+    ) -> None:
+        """Recorre un laberinto de popups, captchas y botones hasta el archivo."""
+        deadline = time.monotonic() + min(self.max_sequence_seconds, 120.0)
+        vistos: set[str] = set()
+        for iteration in range(1, max_iterations + 1):
+            if time.monotonic() >= deadline:
+                outcome.timed_out = True
+                self._log("laberinto: tiempo máximo agotado")
+                break
+            if download_holder.get("download") is not None:
+                break
+
+            self._close_popups(context, page)
+            if self._page_has_challenge(page):
+                self._log("laberinto: captcha detectado")
+                self._click_verification(page)
+                self._wait(page)
+
+            try:
+                page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+            if download_holder.get("download") is not None:
+                break
+
+            url_actual = getattr(page, "url", "") or ""
+            if self._is_file_url(url_actual):
+                outcome.extracted_url = url_actual
+                self._log(f"laberinto: archivo detectado -> {url_actual[:120]}")
+                break
+            enlace = self._find_txt_link(page)
+            if enlace:
+                outcome.extracted_url = enlace
+                break
+
+            self._log(f"laberinto: iteración {iteration}, buscando botón…")
+            boton = self._find_text_button(page)
+            if boton is None:
+                try:
+                    page.wait_for_timeout(1200)
+                except Exception:
+                    time.sleep(1.2)
+                boton = self._find_text_button(page)
+            if boton is None:
+                self._log("laberinto: no hay más botones")
+                break
+
+            antes = getattr(page, "url", "") or ""
+            if not self._click_locator(page, boton):
+                self._log("laberinto: no se pudo pulsar el botón")
+                break
+            self._wait(page)
+            despues = getattr(page, "url", "") or ""
+            if despues == antes:
+                # El clic no navegó: esperar y reintentar una vez más.
+                try:
+                    page.wait_for_timeout(1500)
+                except Exception:
+                    time.sleep(1.5)
+                if download_holder.get("download") is None:
+                    otro = self._find_text_button(page, exclude=vistos)
+                    if otro is not None and self._click_locator(page, otro):
+                        self._wait(page)
+            vistos.add(despues)
+            if despues in vistos and iteration > 3 and despues == antes:
+                self._log("laberinto: sin avance, se detiene")
+                break
+
+        if time.monotonic() >= deadline:
+            outcome.timed_out = True
+
+    def _solve_challenge(self, page: Any, deadline: float) -> bool:
+        """Resuelve el captcha de ICutLink ("Selecciona el número N").
+
+        Los botones son imágenes sin texto, así que se prueban pulsaciones
+        aleatorias; cada fallo recarga un desafío nuevo. Se para al ver el
+        aviso de verificado o al cambiar de página.
+        """
+        self._log("posible captcha: esperando desafío…")
+        patron = re.compile(r"select_number|Selecciona el n[uú]mero|Verify You")
+        texto = ""
+        limite = time.monotonic() + 6.0
+        while time.monotonic() < limite:
+            try:
+                texto = page.inner_text("body")
+            except Exception:
+                texto = ""
+            if patron.search(texto):
+                break
+            try:
+                page.wait_for_timeout(500)
+            except Exception:
+                time.sleep(0.5)
+        if not patron.search(texto):
+            return False
+        start_url = getattr(page, "url", "") or ""
+        for _ in range(60):
+            if time.monotonic() >= deadline:
+                return False
+            # Esperar a que el desafío (re)aparezca tras un fallo.
+            try:
+                page.wait_for_function(
+                    "() => /Selecciona el n|select_number/i.test(document.body.innerText)",
+                    timeout=12000,
+                )
+            except Exception:
+                continue
+            try:
+                total = page.locator("button").count()
+            except Exception:
+                total = 0
+            if total <= 0:
+                try:
+                    page.wait_for_timeout(700)
+                except Exception:
+                    time.sleep(0.7)
+                continue
+            idx = random.randrange(total)
+            self._log(f"captcha: probando botón {idx + 1}/{total}")
+            try:
+                page.locator("button").nth(idx).evaluate("el => el.click()")
+            except Exception as exc:
+                self._log(f"captcha: clic falló: {exc}")
+            try:
+                page.wait_for_timeout(1000)
+            except Exception:
+                time.sleep(1.0)
+            # Esperar a que el desafío viejo desaparezca antes de intentar otro.
+            if (getattr(page, "url", "") or "") == start_url:
+                try:
+                    page.wait_for_function(
+                        "() => !/Selecciona el n|select_number/i.test(document.body.innerText)",
+                        timeout=8000,
+                    )
+                except Exception:
+                    pass
+            try:
+                texto = page.inner_text("body")
+            except Exception:
+                texto = ""
+            avanzado = (getattr(page, "url", "") or "") != start_url
+            if re.search(r"Verificado|Verified|success", texto, re.I) or avanzado:
+                self._log("captcha de ICutLink resuelto")
+                # Dejar que la pasarela termine su POST/redirección.
+                try:
+                    page.wait_for_load_state("networkidle", timeout=8000)
+                except Exception:
+                    pass
+                try:
+                    page.wait_for_timeout(2000)
+                except Exception:
+                    time.sleep(2.0)
+                return True
+        return False
 
     def _run_sequence(
         self,
@@ -517,10 +878,47 @@ class BrowserResolver:
                     self._log("flujo multi-click agotado durante una espera")
                     break
             elif kind == "CLICK":
+                url_antes = getattr(page, "url", "") or ""
                 if self._click(page, action, deadline):
+                    etiqueta = f"{action.selector or ''} {action.text or ''}".lower()
+                    if any(
+                        clave in etiqueta
+                        for clave in ("mainbutton", "download", "descargar")
+                    ):
+                        # Este clic dispara una petición y luego navega: esperar
+                        # a que la URL cambie para no extraer la página vieja.
+                        try:
+                            page.wait_for_function(
+                                "(u) => location.href !== u", url_antes, timeout=15000
+                            )
+                        except Exception:
+                            pass
                     self._wait(page)
                     if not action.keep_popup:
                         self._close_extra_tabs(extra_pages, page)
+                    self._log(f"url tras clic: {getattr(page, 'url', '')}")
+            elif kind == "SHORTEN":
+                current = getattr(page, "url", "") or ""
+                if "vercel.app" in current and "/api/shorten" not in current:
+                    self._log("wrapper detectado; llamando a su API")
+                    try:
+                        target = page.evaluate(
+                            """async () => {
+                                const u = new URL(location.href).searchParams.get('url');
+                                if (!u) return '';
+                                const r = await fetch('/api/shorten?url=' + encodeURIComponent(u));
+                                const d = await r.json();
+                                return d.shortenedUrl || '';
+                            }"""
+                        )
+                    except Exception as exc:
+                        target = ""
+                        self._log(f"API del wrapper falló: {exc}")
+                    if target:
+                        try:
+                            page.goto(target, wait_until="domcontentloaded", timeout=30000)
+                        except Exception as exc:
+                            self._log(f"navegación al acortador falló: {exc}")
             elif kind == "EXTRACT_URL":
                 url = self._extract_url(page, action.selector)
                 if url:
@@ -567,12 +965,21 @@ class BrowserResolver:
 
         try:
             with self._factory()() as playwright:
-                browser = playwright.chromium.launch(headless=self.headless)
+                launch_kwargs: dict[str, Any] = {"headless": self.headless}
+                if self.slow_mo:
+                    launch_kwargs["slow_mo"] = int(self.slow_mo)
+                browser = playwright.chromium.launch(**launch_kwargs)
                 context = browser.new_context(
                     user_agent=self.user_agent,
                     viewport={"width": 1366, "height": 768},
                     accept_downloads=True,
+                    extra_http_headers=HEADLESS_MASK_HEADERS,
                 )
+                if speed_up_timers or self.maze:
+                    try:
+                        context.add_init_script(TIMER_EVASION_SCRIPT)
+                    except Exception:
+                        pass
                 initial_cookies = self._cookies_for_context(self.cookies)
                 if initial_cookies:
                     try:
@@ -621,6 +1028,15 @@ class BrowserResolver:
                 except Exception as exc:
                     self._log(f"goto falló: {exc}")
 
+                try:
+                    self._solve_challenge(
+                        page,
+                        time.monotonic()
+                        + max(self.max_wait, self.max_sequence_seconds),
+                    )
+                except Exception as exc:
+                    self._log(f"captcha no resuelto: {exc}")
+
                 if plan:
                     self._run_sequence(
                         page, extra_pages, plan, outcome, download_holder
@@ -637,6 +1053,16 @@ class BrowserResolver:
                             break
                         self._click_verification(page)
                         self._wait(page)
+
+                if (
+                    self.maze
+                    and download_holder.get("download") is None
+                    and not outcome.extracted_url
+                ):
+                    try:
+                        self._run_maze(page, context, download_holder, outcome)
+                    except Exception as exc:
+                        self._log(f"laberinto interrumpido: {exc}")
 
                 current = getattr(page, "url", "") or ""
                 if current:
@@ -711,6 +1137,9 @@ def browser_resolve_and_download(
     actions: Sequence[Any] | None = None,
     speed_up_timers: bool = False,
     max_sequence_seconds: float = 120.0,
+    maze: bool = True,
+    debug: bool = False,
+    slow_mo: int | None = None,
 ) -> tuple[str, str, Path | None]:
     """Compatibilidad: resuelve y opcionalmente descarga con el navegador.
 
@@ -726,6 +1155,9 @@ def browser_resolve_and_download(
         cookies=cookies,
         allow_private=allow_private,
         max_sequence_seconds=max_sequence_seconds,
+        maze=maze,
+        debug=debug,
+        slow_mo=slow_mo,
     )
     outcome = browser.resolve(
         start_url,

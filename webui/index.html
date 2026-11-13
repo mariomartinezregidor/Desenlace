@@ -341,13 +341,7 @@ function iniciarEventos() {
 }
 
 function procesarEstado(datos) {
-  if (!jobId) return;
-  let datos;
-  try {
-    const r = await fetch(`/api/estado?id=${encodeURIComponent(jobId)}`);
-    if (!r.ok) return;
-    datos = await r.json();
-  } catch (e) { return; }
+  if (!jobId || !datos) return;
 
   const terminado = datos.estado !== "en_curso";
   const pctGlobal = datos.total ? Math.round((datos.completados + datos.fallidos) / datos.total * 100) : 0;

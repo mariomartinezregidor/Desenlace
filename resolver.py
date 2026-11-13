@@ -239,10 +239,12 @@ class LinkResolver:
         trace: list[dict[str, Any]] | None = None,
         browser_timeout: float = 120.0,
         max_size: int | None = None,
+        debug_browser: bool = False,
     ) -> None:
         self.logger: LogFunction = logger or _default_log(log_lock)
         self.trace: list[dict[str, Any]] = trace if trace is not None else []
         self.browser_timeout = max(5.0, float(browser_timeout))
+        self.debug_browser = debug_browser
         self.max_size = max_size
         self.timeout = timeout
         self.max_wait = max_wait
@@ -390,7 +392,8 @@ class LinkResolver:
         if not BrowserResolver.available():
             self._log(f"    {reason}; Playwright no está instalado")
             return None
-        self._log(f"    {reason}; usando navegador headless...")
+        modo = "visible (debug)" if self.debug_browser else "headless"
+        self._log(f"    {reason}; usando navegador {modo}...")
         try:
             outcome = BrowserResolver(
                 timeout=self.timeout,
@@ -400,6 +403,9 @@ class LinkResolver:
                 cookies=self.session.cookies,
                 allow_private=self.allow_private,
                 max_sequence_seconds=self.browser_timeout,
+                maze=True,
+                debug=self.debug_browser,
+                slow_mo=250 if self.debug_browser else None,
             ).resolve(
                 url,
                 actions=actions,
@@ -469,18 +475,23 @@ class LinkResolver:
         target = outcome.extracted_url or outcome.download_url
         if not target:
             candidate = outcome.final_url
-            if candidate and candidate != url:
+            if candidate and candidate != url and "wp-" not in candidate.lower():
                 target = candidate
         if (
             target
             and target.startswith(("http://", "https://"))
             and not target.startswith("blob:")
+            and "wp-" not in target.lower()
         ):
             self._log(f"    el navegador obtuvo -> {redact_url(target)}")
             return target
         return None
 
     def _prepare_start(self, url: str) -> str:
+        # Con fallback de navegador dejamos el wrapper intacto: su botón
+        # #mainButton inicia el flujo del acortador y hay que pulsarlo.
+        if self.browser_fallback:
+            return normalize_url(url)
         target = extract_wrapper_target(url)
         if target is None:
             return normalize_url(url)
@@ -515,8 +526,25 @@ class LinkResolver:
                 try:
                     result = self._resolve_from(page_url)
                 except Exception as exc:
-                    self._log(f"    caché no válida ({exc}); resolviendo de nuevo")
-                    self.cache.remove(key)
+                    # La caché ya apunta a la página final (p. ej. un artículo
+                    # de la red de anuncios). Si no se puede "resolver" más,
+                    # se usa directamente como destino para descargarla.
+                    self._log(
+                        f"    caché válida como destino final ({exc}); "
+                        "descargando la página cacheada"
+                    )
+                    nombre = sanitize_filename(
+                        str(entry.get("filename") or "")
+                        or filename_from_url(page_url)
+                        or "download.html"
+                    )
+                    return Resolution(
+                        final_url=page_url,
+                        filename=nombre,
+                        referer=start_url,
+                        hops=0,
+                        page_url=page_url,
+                    )
                 else:
                     if result.page_url is None:
                         result.page_url = page_url
@@ -628,6 +656,22 @@ class LinkResolver:
                 return result
 
             html = response.text
+            low_html = html.lower()
+            if self.browser_fallback and (
+                "select_number" in low_html
+                or "selecciona el n" in low_html
+                or "ic-challenges.js" in low_html
+            ):
+                self._log("    captcha numérico detectado; usando navegador")
+                response.close()
+                outcome = self._browser_plan_attempt(
+                    response_url, [], reason="captcha numérico"
+                )
+                if isinstance(outcome, Resolution):
+                    return outcome
+                if outcome:
+                    method, url, data, referer = "GET", outcome, None, response_url
+                    continue
             action = detect_action(html, response_url)
             if self.trace:
                 self.trace[-1]["action"] = action.kind if action is not None else None

@@ -92,6 +92,9 @@ def detect_browser_plan(ctx: PageContext) -> list[dict[str, object]] | None:
         label = _element_label(element)
         if not any(keyword in label for keyword in CLICK_KEYWORDS):
             continue
+        # "Skip to content" no avanza nada: es un ancla interna.
+        if "skip to" in label or "skip-link" in label:
+            continue
         selector = _selector_for(element)
         step: dict[str, object] = {"kind": "click"}
         if selector:
@@ -111,11 +114,24 @@ def detect_browser_plan(ctx: PageContext) -> list[dict[str, object]] | None:
             break
 
     for form in soup.find_all("form", action=True):
+        action = (form.get("action") or "").lower()
+        # El formulario de comentarios de WordPress no lleva al archivo.
+        if "wp-comments-post" in action or "wp-" in action:
+            continue
         selector = "form[action] button[type='submit'], form[action] input[type='submit']"
         if selector in seen:
             continue
         seen.add(selector)
         candidates.append({"kind": "click", "selector": selector})
+
+    # Prioriza el botón real de descarga frente a badges/tutoriales.
+    def _prioridad(step: dict[str, object]) -> int:
+        texto = f"{step.get('selector', '')} {step.get('text', '')}".lower()
+        if "download" in texto or "descargar" in texto or "mainbutton" in texto:
+            return 0
+        return 1
+
+    candidates.sort(key=_prioridad)
 
     has_timer = bool(TIMER_RE.search(ctx.html))
     if not candidates and not has_timer:
@@ -126,12 +142,23 @@ def detect_browser_plan(ctx: PageContext) -> list[dict[str, object]] | None:
         return None
 
     plan: list[dict[str, object]] = [
-        {"kind": "wait", "seconds": 1.5},
+        {"kind": "wait", "seconds": 8.0},
+        # Intersticiales de publicidad (cloudpiko y similares): hay que cerrar
+        # el overlay antes de poder pulsar el botón real de descarga.
+        {"kind": "click", "selector": "[class*='__closelink']"},
+        {"kind": "close_popup"},
+        {"kind": "click", "selector": "[class*='__close']"},
+        {"kind": "wait", "seconds": 1.0},
     ]
     for step in candidates:
         plan.append(step)
+        # Si el botón no navega por sí solo (web-api-*.vercel.app), lanzar su API.
+        if _prioridad(step) == 0:
+            plan.append({"kind": "shorten"})
         plan.append({"kind": "close_popup"})
         plan.append({"kind": "wait", "seconds": 1.0})
+    # Dar tiempo a que la petición complete su navegación.
+    plan.append({"kind": "wait", "seconds": 8.0})
     plan.append({"kind": "extract_url"})
     for selector in DOWNLOAD_SELECTORS:
         plan.append({"kind": "extract_url", "selector": selector})

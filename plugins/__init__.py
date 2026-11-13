@@ -134,6 +134,18 @@ def looks_like_shortener(html: str, url: str) -> bool:
 
 def detect_action(html: str, base_url: str) -> Action | None:
     """Ejecuta los plugins en orden de prioridad y devuelve la primera acción."""
+    # Las páginas de WordPress (artículos de relleno de redes de anuncios) no
+    # son acortadores reales: sus formularios y enlaces "siguiente" son falsos
+    # positivos que rompen el flujo. Se dejan para el bypass con navegador.
+    low = (html or "").lower()
+    # `wp-content/uploads` también aparece en imágenes de anuncios dentro de
+    # acortadores, así que exigimos marcadores propios de una página WordPress.
+    if (
+        "wp-comments-post" in low
+        or "wp-json" in low
+        or "wp-content/themes" in low
+    ):
+        return None
     plugins = discover_plugins()
     hosts = shortener_hosts()
 

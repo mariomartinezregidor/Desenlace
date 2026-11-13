@@ -181,6 +181,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-browser", action="store_true",
         help="Si el modo normal falla, reintentar automáticamente con navegador",
     )
+    parser.add_argument(
+        "--debug-browser",
+        action="store_true",
+        help="Abre el navegador visible, con slow-motion y trazas del bypass",
+    )
     parser.add_argument("--force", action="store_true", help="Sobrescribir archivos existentes")
     parser.add_argument("--verbose", "-v", action="store_true", help="Mostrar detalles adicionales")
     parser.add_argument(
@@ -298,6 +303,7 @@ def _options_for(
         allow_private=args.allow_private,
         cache=cache,
         max_size=getattr(args, 'max_size', None),
+        debug_browser=bool(getattr(args, "debug_browser", False)),
     )
 
 
@@ -329,6 +335,8 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = build_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "debug_browser", False):
+        args.verbose = True
     if args.list_plugins:
         return _print_plugins()
 

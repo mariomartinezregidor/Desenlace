@@ -753,11 +753,17 @@ def parse_counter(html: str) -> float:
 
 def decode_safelink(value: str) -> dict:
     """Decodifica el payload base64 (o JSON directo) de wp-safelink."""
-    text = unquote_plus(unquote(value.strip()))
-    candidates = [text]
-    if text.startswith("{"):
-        candidates.insert(0, text)
+    raw_value = value.strip()
+    # `unquote_plus` cambia '+' por espacios y corrompe el base64; probamos
+    # también el valor original y `unquote` a secas antes de rendirnos.
+    candidates = [raw_value, unquote(raw_value), unquote_plus(unquote(raw_value))]
+    if raw_value.startswith("{"):
+        candidates.insert(0, raw_value)
+    vistos: set[str] = set()
     for candidate in candidates:
+        if candidate in vistos:
+            continue
+        vistos.add(candidate)
         padded = candidate + "=" * (-len(candidate) % 4)
         for decoder in (base64.b64decode, base64.urlsafe_b64decode):
             try:

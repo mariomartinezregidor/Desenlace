@@ -61,6 +61,7 @@ class ProcessOptions:
     allow_private: bool = False
     cache: ResolutionCache | None = None
     max_size: int | None = None
+    debug_browser: bool = False
 
 
 @dataclass
@@ -102,6 +103,7 @@ def build_resolver(
         trace=trace,
         browser_timeout=options.browser_timeout,
         max_size=options.max_size,
+        debug_browser=options.debug_browser,
     )
 
 
@@ -152,6 +154,9 @@ def process_url(
             resolver=resolver,
             max_sequence_seconds=options.browser_timeout,
             allow_private=options.allow_private,
+            maze=True,
+            debug=options.debug_browser,
+            slow_mo=250 if options.debug_browser else None,
         )
         result = Resolution(
             final_url=final_url,

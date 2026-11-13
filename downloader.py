@@ -209,14 +209,18 @@ def download_resolution(
         content_type = response.headers.get("content-type", "").lower()
         if "text/html" in content_type and offset == 0:
             if target.page_url:
+                # La página HTML cacheada ES el resultado del bypass (algunos
+                # acortadores solo entregan un artículo). Guardamos su contenido
+                # en vez de un acceso directo .url.
+                html_name = target.filename or "pagina"
+                if not Path(html_name).suffix:
+                    html_name += ".html"
                 destination = reserve_destination(
-                    output, sanitize_filename("enlace.url"), as_dir=as_dir, force=force
+                    output, sanitize_filename(html_name), as_dir=as_dir, force=force
                 )
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_text(
-                    f"[InternetShortcut]\nURL={target.final_url}\n", encoding="utf-8"
-                )
-                log("    el destino final es HTML; guardado acceso directo .url")
+                destination.write_bytes(response.content)
+                log(f"    página HTML final guardada: {destination.name}")
                 return destination
             snippet = response.text[:300]
             raise ResolveError(
