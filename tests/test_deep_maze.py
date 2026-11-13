@@ -66,6 +66,26 @@ class FakePageForDeepMaze:
     
     def get_by_text(self, text, exact=False):
         return FakeContinueButton(self)
+    
+    def on(self, event, callback):
+        """Simula listener de eventos"""
+        pass
+    
+    def remove_listener(self, event, callback):
+        """Simula removal de listener"""
+        pass
+    
+    def go_back(self, wait_until=None, timeout=None):
+        """Simula ir hacia atrás"""
+        if self.clicks > 0:
+            self.clicks -= 1
+            self.url = self.click_sequence[self.clicks]
+    
+    def go_forward(self, wait_until=None, timeout=None):
+        """Simula ir hacia adelante"""
+        if self.clicks < len(self.click_sequence) - 1:
+            self.clicks += 1
+            self.url = self.click_sequence[self.clicks]
 
 
 class FakeContinueButton:
