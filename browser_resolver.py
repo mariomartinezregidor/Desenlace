@@ -629,7 +629,26 @@ class BrowserResolver:
                     continue
         return None
 
+    def _remove_blocking_overlays(self, page: Any) -> None:
+        """Elimina iframes y divs que bloquean clics (publicidad, modales)."""
+        try:
+            page.evaluate("""() => {
+                const toRemove = Array.from(document.querySelectorAll(
+                    'iframe[id*="container"], iframe[id*="ad"], iframe[id*="popup"], ' +
+                    'div[style*="position:fixed"][id*="ad"], div[style*="position:fixed"][id*="popup"], ' +
+                    '.ads-container, .modal-overlay, .popup-overlay'
+                )).filter(e => e.style.position === 'fixed' || e.tagName === 'IFRAME');
+                
+                for (const elem of toRemove) {
+                    try { elem.parentNode?.removeChild(elem); } catch (e) {}
+                }
+                return toRemove.length;
+            }""")
+        except Exception:
+            pass
+
     def _click_locator(self, page: Any, locator: Any) -> bool:
+        self._remove_blocking_overlays(page)
         try:
             if not locator.is_visible(timeout=500):
                 return False
