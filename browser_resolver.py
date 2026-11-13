@@ -557,8 +557,9 @@ class BrowserResolver:
                 return ""
 
     def _close_popups(self, context: Any, page: Any) -> int:
-        """Cierra todas las pestañas emergentes y devuelve el foco a `page`."""
+        """Cierra pestañas basura (adult/spam) y devuelve el foco a `page`."""
         closed = 0
+        blocked = ('cam4', 'adult', 'sex', 'porn', 'dating', 'xnxx', 'xvideos')
         try:
             pages = list(context.pages)
         except Exception:
@@ -567,12 +568,18 @@ class BrowserResolver:
             if candidate is page:
                 continue
             try:
+                url = candidate.url.lower()
+                if any(b in url for b in blocked):
+                    self._log(f"[BLOCK] Cerrando popup bloqueado: {url[:60]}")
+                    candidate.close()
+                    closed += 1
+                    continue
                 candidate.close()
                 closed += 1
             except Exception:
                 pass
         if closed:
-            self._log(f"Cerradas {closed} pestaña(s) de publicidad")
+            self._log(f"[POPUPS] Cerradas {closed} pestana(s)")
         try:
             page.bring_to_front()
         except Exception:
@@ -630,22 +637,37 @@ class BrowserResolver:
         return None
 
     def _remove_blocking_overlays(self, page: Any) -> None:
-        """Elimina iframes y divs que bloquean clics (publicidad, modales)."""
+        """Elimina AGRESIVAMENTE overlays, iframes y publicidad que bloquean clics."""
         try:
-            page.evaluate("""() => {
-                const toRemove = Array.from(document.querySelectorAll(
-                    'iframe[id*="container"], iframe[id*="ad"], iframe[id*="popup"], ' +
-                    'div[style*="position:fixed"][id*="ad"], div[style*="position:fixed"][id*="popup"], ' +
-                    '.ads-container, .modal-overlay, .popup-overlay'
-                )).filter(e => e.style.position === 'fixed' || e.tagName === 'IFRAME');
-                
-                for (const elem of toRemove) {
-                    try { elem.parentNode?.removeChild(elem); } catch (e) {}
-                }
-                return toRemove.length;
+            removed = page.evaluate("""() => {
+                let count = 0;
+                document.querySelectorAll('*').forEach(el => {
+                    const style = window.getComputedStyle(el);
+                    const z = parseInt(style.zIndex) || 0;
+                    const p = style.position;
+                    if ((z > 50 || p === 'fixed') && el.offsetHeight > 0 && el.offsetWidth > 0) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > window.innerWidth * 0.3 && r.height > window.innerHeight * 0.2) {
+                            try { el.remove(); count++; } catch(e) {}
+                        }
+                    }
+                });
+                document.querySelectorAll('iframe').forEach(el => {
+                    const s = (el.src || '').toLowerCase();
+                    const i = (el.id || '').toLowerCase();
+                    if (s.includes('ad') || s.includes('banner') || i.includes('ad') || i.includes('popup')) {
+                        try { el.remove(); count++; } catch(e) {}
+                    }
+                });
+                document.querySelectorAll('[class*="ad"], [class*="popup"], [class*="modal"]').forEach(el => {
+                    if (el.offsetHeight > 50) try { el.remove(); count++; } catch(e) {}
+                });
+                return count;
             }""")
-        except Exception:
-            pass
+            if removed > 0:
+                self._log(f"[AD-KILLER] Removidos {removed} overlays")
+        except Exception as e:
+            self._log(f"[AD-KILLER] Error: {str(e)[:50]}")
 
     def _click_locator(self, page: Any, locator: Any) -> bool:
         self._remove_blocking_overlays(page)
@@ -665,6 +687,25 @@ class BrowserResolver:
                 return True
             except Exception:
                 continue
+        return False
+
+    def _go_back_if_stuck(self, page: Any) -> bool:
+        """Vuelve atrás si se detecta página bloqueada (adultos/spam)."""
+        try:
+            current = getattr(page, "url", "") or ""
+            blocked = ('cam4', 'adult', 'sex', 'porn', 'dating')
+            if any(b in current.lower() for b in blocked):
+                self._log(f"[BACK] Pagina bloqueada, volviendo atras...")
+                try:
+                    page.go_back(wait_until='domcontentloaded', timeout=5000)
+                    time.sleep(1)
+                    new_url = getattr(page, "url", "") or ""
+                    self._log(f"[BACK] Ahora en: {new_url[:60]}")
+                    return True
+                except Exception as e:
+                    self._log(f"[BACK] Error: {str(e)[:40]}")
+        except Exception:
+            pass
         return False
 
     def _find_txt_link(self, page: Any) -> str | None:
@@ -706,7 +747,7 @@ class BrowserResolver:
         context: Any,
         download_holder: dict[str, Any],
         outcome: "BrowserOutcome",
-        max_iterations: int = 10,
+        max_iterations: int = 50,
     ) -> None:
         """Recorre un laberinto de popups, captchas y botones hasta el archivo."""
         deadline = time.monotonic() + min(self.max_sequence_seconds, 120.0)

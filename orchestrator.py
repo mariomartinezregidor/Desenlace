@@ -50,7 +50,7 @@ class ProcessOptions:
     max_wait: float = DEFAULT_MAX_WAIT
     max_hops: int = DEFAULT_MAX_HOPS
     max_redirects: int = DEFAULT_MAX_REDIRECTS
-    browser_timeout: float = 120.0
+    browser_timeout: float = 300.0  # Aumentado para laberintos profundos
     verbose: bool = False
     full_chain: bool = False
     wait_buffer: float = DEFAULT_WAIT_BUFFER
