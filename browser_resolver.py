@@ -720,6 +720,142 @@ class BrowserResolver:
                 continue
         return False
 
+    def _find_bait_button(self, page: Any) -> Any | None:
+        """Busca botón cebo: Continuar, Siguiente, etc (NO Descarga Directa)."""
+        keywords = ['continuar', 'continue', 'siguiente', 'next', 'pulsa', 'click', 'acceso', 'ver']
+        try:
+            items = page.locator('a, button, input[type=submit], [role=button]')
+            for idx in range(min(items.count(), 100)):
+                try:
+                    item = items.nth(idx)
+                    if not item.is_visible(timeout=200):
+                        continue
+                    text = ""
+                    try:
+                        text = item.inner_text() or ""
+                    except:
+                        pass
+                    if not text:
+                        try:
+                            text = item.get_attribute("value") or ""
+                        except:
+                            pass
+                    low = text.lower().strip()
+                    if any(kw in low for kw in keywords):
+                        if 'descarga' not in low or 'directo' not in low:
+                            return item
+                except:
+                    pass
+        except:
+            pass
+        return None
+    
+    def _find_real_download_button(self, page: Any) -> Any | None:
+        """Busca botón real: Descarga Directa, .txt, Download, etc."""
+        keywords = ['descarga directa', 'direct download', 'download', 'descargar archivo', 'enlace directo']
+        try:
+            # Primero buscar enlaces .txt
+            try:
+                links = page.locator('a[href*=".txt"], a[download]')
+                for i in range(min(links.count(), 10)):
+                    try:
+                        if links.nth(i).is_visible(timeout=200):
+                            return links.nth(i)
+                    except:
+                        pass
+            except:
+                pass
+            
+            # Buscar por keyword
+            items = page.locator('a, button, input[type=submit], [role=button]')
+            for idx in range(min(items.count(), 100)):
+                try:
+                    item = items.nth(idx)
+                    if not item.is_visible(timeout=200):
+                        continue
+                    text = ""
+                    try:
+                        text = item.inner_text() or ""
+                    except:
+                        pass
+                    if any(kw in text.lower() for kw in keywords):
+                        return item
+                except:
+                    pass
+        except:
+            pass
+        return None
+    
+    def _bait_and_back_sequence(self, page: Any, context: Any) -> bool:
+        """Secuencia: cebo → popup → atrás → descarga real."""
+        for attempt in range(1, 4):
+            self._log(f"[BAIT-{attempt}] Buscando botón cebo...")
+            bait = self._find_bait_button(page)
+            if not bait:
+                return False
+            
+            try:
+                text = bait.inner_text(timeout=500).strip()[:50]
+            except:
+                text = "?"
+            
+            self._log(f"[BAIT-{attempt}] Pulsando: {text}")
+            try:
+                bait.click(timeout=3000, force=True)
+            except:
+                try:
+                    bait.evaluate("el => el.click()")
+                except:
+                    return False
+            
+            self._log(f"[BAIT-{attempt}] Cerrando popup...")
+            time.sleep(2)
+            self._close_popups(context, page)
+            
+            self._log(f"[BAIT-{attempt}] Volviendo atrás...")
+            try:
+                page.go_back(wait_until='domcontentloaded', timeout=10000)
+            except Exception as e:
+                self._log(f"[BAIT-{attempt}] Error: {str(e)[:40]}")
+                return False
+            
+            time.sleep(2)
+            try:
+                page.wait_for_load_state('networkidle', timeout=15000)
+            except:
+                pass
+            
+            self._log(f"[BAIT-{attempt}] Buscando botón real...")
+            real = self._find_real_download_button(page)
+            if not real:
+                self._log(f"[BAIT-{attempt}] No encontrado, reintentando...")
+                continue
+            
+            try:
+                rtext = real.inner_text(timeout=500).strip()[:50]
+            except:
+                rtext = "?"
+            
+            self._log(f"[BAIT-{attempt}] ✓ Encontrado: {rtext}")
+            
+            try:
+                real.click(timeout=3000, force=True)
+            except:
+                try:
+                    real.evaluate("el => el.click()")
+                except:
+                    continue
+            
+            self._wait(page)
+            url = getattr(page, "url", "") or ""
+            if self._is_file_url(url):
+                self._log(f"[BAIT-{attempt}] ✓✓✓ DESCARGA: {url[:80]}")
+                return True
+            
+            time.sleep(1)
+        
+        return False
+    
     def _go_back_if_stuck(self, page: Any) -> bool:
         """Vuelve atrás si se detecta página bloqueada (adultos/spam)."""
         try:
@@ -867,7 +1003,20 @@ class BrowserResolver:
                 self._log(f"[MAZE-{iteration}] OK Enlace .txt encontrado")
                 break
             
-            # PASO 5: Buscar botón
+            # PASO 5: Buscar countdown y esperar
+            # Algunos laberintos tienen contadores de espera antes de permitir clic
+            try:
+                has_countdown = page.evaluate("""() => {
+                    const text = document.body.innerText;
+                    return /countdown|espera|espere|segundos|seconds|wait/i.test(text);
+                }""")
+                if has_countdown:
+                    self._log(f"[MAZE-{iteration}] Detectado countdown, esperando 5s...")
+                    time.sleep(5)
+            except:
+                pass
+            
+            # PASO 6: Buscar botón
             self._log(f"[MAZE-{iteration}] ({remaining:.0f}s) Buscando boton...")
             boton = self._find_text_button(page)
             
@@ -883,7 +1032,7 @@ class BrowserResolver:
                     self._log(f"[MAZE-{iteration}] No hay boton disponible")
                     break
             
-            # PASO 6: Obtener info del botón
+            # PASO 7: Obtener info del botón
             try:
                 texto_btn = boton.inner_text(timeout=300).strip()[:60]
             except:
@@ -908,16 +1057,20 @@ class BrowserResolver:
             for intento_clic in range(1, 4):  # 3 intentos
                 try:
                     if self._click_locator(page, boton):
+                        # ESPERAR SIGNIFICATIVAMENTE después del clic
                         self._wait(page)
+                        time.sleep(2)  # Pausa adicional
                         
                         # Cerrar popups que se abran
                         self._close_popups(context, page)
                         
-                        # Esperar a estabilización
+                        # Esperar a estabilización con más tiempo
                         try:
-                            page.wait_for_load_state("networkidle", timeout=8000)
+                            page.wait_for_load_state("networkidle", timeout=15000)
                         except Exception:
                             pass
+                        
+                        time.sleep(1)  # Otra pausa para que DOM se estabilice
                         
                         # Checar si hubo navegación
                         url_despues = getattr(page, "url", "") or ""
@@ -926,8 +1079,8 @@ class BrowserResolver:
                             clic_exitoso = True
                             break
                         else:
-                            self._log(f"[MAZE-{iteration}] RETRY Sin progreso, reintentando...")
-                            time.sleep(1)
+                            self._log(f"[MAZE-{iteration}] WAIT No cambió URL, esperando más...")
+                            time.sleep(3)  # Espera más larga antes de reintentar
                 except Exception as e:
                     err_msg = str(e)[:50]
                     self._log(f"[MAZE-{iteration}] Error #{intento_clic}: {err_msg}")
@@ -936,9 +1089,20 @@ class BrowserResolver:
                     continue
             
             if not clic_exitoso:
-                self._log(f"[MAZE-{iteration}] Clic no fue exitoso, continuando...")
-                # Continuar intentando otras estrategias en siguiente iteración
-                # No rendirse - podría haber otro botón o contenido que cargue
+                # Si estamos en la misma URL y el botón es el mismo, es un loop
+                url_check = getattr(page, "url", "") or ""
+                if url_check == url_actual and btn_hash in botones_intentados:
+                    # Romper el loop: intentar secuencia de CEBO + ATRÁS
+                    self._log(f"[MAZE-{iteration}] LOOP STUCK - intentando secuencia CEBO...")
+                    if self._bait_and_back_sequence(page, context):
+                        # Funcionó - se encontró la descarga
+                        outcome.extracted_url = getattr(page, "url", "")
+                        self._log(f"[MAZE-{iteration}] ✓✓✓ EXITO con secuencia CEBO")
+                        break
+                    # Si no funcionó, continuar
+                    continue
+                
+                # Continuar intentando
                 continue
         
         if time.monotonic() >= deadline:
