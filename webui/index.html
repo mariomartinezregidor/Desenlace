@@ -68,11 +68,10 @@
       radial-gradient(900px 700px at 50% 115%, rgba(59, 214, 182, .07), transparent 60%),
       linear-gradient(180deg, var(--fondo-2), var(--fondo));
   }
-  .orb { position: absolute; border-radius: 50%; will-change: transform; }
-  .orb-1 { width: 480px; height: 480px; left: -120px; top: -140px; background: radial-gradient(circle at 30% 30%, rgba(91, 140, 255, .34), transparent 65%); animation: flotar 26s ease-in-out infinite alternate; }
-  .orb-2 { width: 520px; height: 520px; right: -160px; top: -100px; background: radial-gradient(circle at 60% 40%, rgba(162, 91, 255, .3), transparent 65%); animation: flotar 32s ease-in-out infinite alternate-reverse; }
-  .orb-3 { width: 600px; height: 600px; left: 30%; bottom: -320px; background: radial-gradient(circle at 50% 50%, rgba(59, 214, 182, .16), transparent 65%); animation: flotar 38s ease-in-out infinite alternate; }
-  @keyframes flotar { from { transform: translate3d(0, 0, 0) scale(1); } to { transform: translate3d(44px, 32px, 0) scale(1.08); } }
+  .orb { position: absolute; border-radius: 50%; }
+  .orb-1 { width: 480px; height: 480px; left: -120px; top: -140px; background: radial-gradient(circle at 30% 30%, rgba(91, 140, 255, .34), transparent 65%); }
+  .orb-2 { width: 520px; height: 520px; right: -160px; top: -100px; background: radial-gradient(circle at 60% 40%, rgba(162, 91, 255, .3), transparent 65%); }
+  .orb-3 { width: 600px; height: 600px; left: 30%; bottom: -320px; background: radial-gradient(circle at 50% 50%, rgba(59, 214, 182, .16), transparent 65%); }
   .rejilla {
     position: absolute; inset: 0;
     background-image:
@@ -101,13 +100,6 @@
     box-shadow: 0 12px 30px rgba(91, 140, 255, .4), inset 0 1px 0 rgba(255, 255, 255, .35);
     flex-shrink: 0; position: relative; overflow: hidden;
   }
-  .logo::after {
-    content: ""; position: absolute; inset: 0;
-    background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, .55) 50%, transparent 70%);
-    transform: translateX(-130%);
-    animation: barrido 4.5s ease-in-out infinite;
-  }
-  @keyframes barrido { 0%, 55% { transform: translateX(-130%); } 100% { transform: translateX(130%); } }
   h1 {
     font-size: 1.6rem; margin: 0; letter-spacing: -.02em;
     background: linear-gradient(92deg, var(--texto) 30%, #aebfff 70%, var(--acento-2));
@@ -132,10 +124,8 @@
     padding: 24px;
     margin-bottom: 18px;
     box-shadow: var(--sombra), inset 0 1px 0 rgba(255, 255, 255, .06);
-    animation: subir .5s cubic-bezier(.2, .7, .25, 1) both;
+    animation: subir .28s ease both;
   }
-  .panel:nth-of-type(2) { animation-delay: .07s; }
-  .panel:nth-of-type(3) { animation-delay: .14s; }
   .panel::before {
     content: ""; position: absolute; top: 0; left: 10%; right: 10%; height: 1px;
     background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .3), transparent);
@@ -263,13 +253,6 @@
     box-shadow: 0 0 16px rgba(91, 140, 255, .6);
     transition: width .3s ease; overflow: hidden;
   }
-  .barra > div::after {
-    content: ""; position: absolute; inset: 0; border-radius: inherit;
-    background-image: linear-gradient(45deg, rgba(255, 255, 255, .22) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, .22) 50%, rgba(255, 255, 255, .22) 75%, transparent 75%);
-    background-size: 18px 18px;
-    animation: rayas .9s linear infinite;
-  }
-  @keyframes rayas { to { background-position: 18px 0; } }
   .barra.indeterminada > div { width: 35% !important; animation: deslizar 1.15s infinite ease-in-out; }
   @keyframes deslizar {
     0% { transform: translateX(-120%); }
@@ -320,10 +303,8 @@
   .estado-final::before {
     content: ""; width: 8px; height: 8px; border-radius: 50%;
     background: currentColor; box-shadow: 0 0 10px currentColor;
-    animation: latido 1.8s ease-in-out infinite;
   }
   .estado-final.error { background: rgba(251, 113, 133, .13); color: var(--error); border-color: rgba(251, 113, 133, .4); }
-  @keyframes latido { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
   .oculto { display: none !important; }
 
   /* ---------- Resultados ---------- */
@@ -336,7 +317,7 @@
     position: relative; overflow: hidden;
     background: rgba(255, 255, 255, .03); border: 1px solid var(--borde);
     border-radius: 15px; padding: 16px;
-    animation: subir .45s cubic-bezier(.2, .7, .25, 1) both;
+    animation: subir .3s ease both;
     transition: transform .18s, border-color .18s, box-shadow .18s;
   }
   [data-theme="light"] .tarjeta { background: rgba(255, 255, 255, .55); }
