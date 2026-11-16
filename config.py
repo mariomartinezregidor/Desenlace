@@ -156,7 +156,7 @@ class Settings:
     """Opciones no secretas. Los argumentos de la CLI tienen prioridad."""
 
     max_redirects: int = 10
-    browser_timeout: float = 120.0
+    browser_timeout: float = 900.0
     allow_private: bool = False
 
 
@@ -164,6 +164,6 @@ def load_settings(dotenv: Mapping[str, str] | None = None) -> Settings:
     values = dotenv if dotenv is not None else load_dotenv()
     return Settings(
         max_redirects=_int_setting("DESENLACE_MAX_REDIRECTS", 10, 1, values),
-        browser_timeout=_float_setting("DESENLACE_BROWSER_TIMEOUT", 120.0, 5.0, values),
+        browser_timeout=_float_setting("DESENLACE_BROWSER_TIMEOUT", 900.0, 5.0, values),
         allow_private=_bool_setting("DESENLACE_ALLOW_PRIVATE", False, values),
     )

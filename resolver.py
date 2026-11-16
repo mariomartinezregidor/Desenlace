@@ -936,6 +936,11 @@ def browser_resolve_and_download(
     resolver: LinkResolver | None = None,
     max_sequence_seconds: float = 120.0,
     allow_private: bool | None = None,
+    actions: Any = None,
+    speed_up_timers: bool = False,
+    maze: bool = True,
+    debug: bool = False,
+    slow_mo: int | None = None,
 ) -> tuple[str, str, Path | None]:
     """Wrapper de compatibilidad sobre :mod:`browser_resolver`."""
     if resolver is None:
@@ -962,4 +967,9 @@ def browser_resolve_and_download(
             else allow_private
         ),
         max_sequence_seconds=max_sequence_seconds,
+        actions=actions,
+        speed_up_timers=speed_up_timers,
+        maze=maze,
+        debug=debug,
+        slow_mo=slow_mo,
     )
