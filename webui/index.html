@@ -68,7 +68,7 @@
       radial-gradient(900px 700px at 50% 115%, rgba(59, 214, 182, .07), transparent 60%),
       linear-gradient(180deg, var(--fondo-2), var(--fondo));
   }
-  .orb { position: absolute; border-radius: 50%; filter: blur(80px); will-change: transform; }
+  .orb { position: absolute; border-radius: 50%; will-change: transform; }
   .orb-1 { width: 480px; height: 480px; left: -120px; top: -140px; background: radial-gradient(circle at 30% 30%, rgba(91, 140, 255, .34), transparent 65%); animation: flotar 26s ease-in-out infinite alternate; }
   .orb-2 { width: 520px; height: 520px; right: -160px; top: -100px; background: radial-gradient(circle at 60% 40%, rgba(162, 91, 255, .3), transparent 65%); animation: flotar 32s ease-in-out infinite alternate-reverse; }
   .orb-3 { width: 600px; height: 600px; left: 30%; bottom: -320px; background: radial-gradient(circle at 50% 50%, rgba(59, 214, 182, .16), transparent 65%); animation: flotar 38s ease-in-out infinite alternate; }
@@ -81,10 +81,6 @@
     background-size: 46px 46px;
     mask-image: radial-gradient(ellipse 100% 55% at 50% -10%, #000 25%, transparent 78%);
     -webkit-mask-image: radial-gradient(ellipse 100% 55% at 50% -10%, #000 25%, transparent 78%);
-  }
-  .grano {
-    position: absolute; inset: 0; opacity: .05; pointer-events: none;
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='120' height='120' filter='url(%23n)' opacity='0.6'/></svg>");
   }
   [data-theme="light"] .orb { opacity: .35; }
   [data-theme="light"] .rejilla { background-image: linear-gradient(rgba(43, 74, 153, .06) 1px, transparent 1px), linear-gradient(90deg, rgba(43, 74, 153, .06) 1px, transparent 1px); }
@@ -123,7 +119,6 @@
     background: var(--panel); border: 1px solid var(--borde);
     border-radius: 999px; width: 44px; height: 44px; padding: 0;
     font-size: 1.1rem; cursor: pointer;
-    backdrop-filter: blur(8px);
     transition: transform .2s, border-color .2s, box-shadow .2s;
   }
   .tema:hover { transform: rotate(18deg) scale(1.06); border-color: var(--acento); box-shadow: 0 0 18px rgba(91, 140, 255, .3); }
@@ -137,8 +132,6 @@
     padding: 24px;
     margin-bottom: 18px;
     box-shadow: var(--sombra), inset 0 1px 0 rgba(255, 255, 255, .06);
-    backdrop-filter: blur(16px) saturate(150%);
-    -webkit-backdrop-filter: blur(16px) saturate(150%);
     animation: subir .5s cubic-bezier(.2, .7, .25, 1) both;
   }
   .panel:nth-of-type(2) { animation-delay: .07s; }
@@ -188,7 +181,6 @@
     border-radius: 12px; padding: 11px 17px;
     font-size: .85rem; font-weight: 600; cursor: pointer;
     white-space: nowrap;
-    backdrop-filter: blur(6px);
     transition: transform .16s, border-color .16s, background .16s, box-shadow .16s, filter .16s;
   }
   button:hover:not(:disabled) { border-color: var(--borde-2); transform: translateY(-1px); box-shadow: var(--sombra-sm); }
@@ -197,12 +189,10 @@
   button:focus-visible { outline: 2px solid var(--acento); outline-offset: 2px; }
   button.principal {
     position: relative; overflow: hidden;
-    background: linear-gradient(110deg, var(--acento), var(--acento-2), var(--acento));
-    background-size: 220% 100%;
+    background: linear-gradient(110deg, var(--acento), var(--acento-2));
     border: none; color: #fff; font-size: .98rem; font-weight: 700; letter-spacing: .01em;
     width: 100%; padding: 15px; margin-top: 18px;
     box-shadow: 0 14px 32px rgba(91, 140, 255, .32), inset 0 1px 0 rgba(255, 255, 255, .28);
-    animation: flujo 7s linear infinite;
   }
   button.principal:hover:not(:disabled) {
     transform: translateY(-2px);
@@ -215,7 +205,6 @@
     transform: translateX(-130%); transition: transform .7s;
   }
   button.principal:hover::after { transform: translateX(130%); }
-  @keyframes flujo { to { background-position: 220% 0; } }
   button.peligro { border-color: rgba(251, 113, 133, .5); color: var(--error); background: rgba(251, 113, 133, .08); }
 
   /* ---------- Opciones ---------- */
@@ -418,7 +407,6 @@
   <div class="orb orb-2"></div>
   <div class="orb orb-3"></div>
   <div class="rejilla"></div>
-  <div class="grano"></div>
 </div>
 <main>
   <div class="cabecera">
